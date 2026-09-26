@@ -1,0 +1,35 @@
+# Render Blueprint for the Drishti API (backend/). Dashboard → New → Blueprint → pick this repo.
+# The frontend stays on Vercel: set NEXT_PUBLIC_API_URL there to this service's URL and redeploy.
+services:
+  - type: web
+    name: drishti-api
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    # Neon lives in AWS us-east-2, i.e. Ohio.
+    region: ohio
+    # ffmpeg re-encodes and the pipeline need more than 512 MB; disks also need a paid plan.
+    plan: 1c-2g
+    # A persistent disk pins the service to one instance, which the in-memory job queue needs anyway.
+    numInstances: 1
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    disk:
+      name: drishti-data
+      mountPath: /data
+      sizeGB: 10
+    envVars:
+      - key: DATA_DIR
+        value: /data
+      - key: CORS_ORIGINS
+        value: https://drishti-hoichoihackathon.vercel.app,http://localhost:3000
+      # Secrets: Render prompts for these when the Blueprint is first created.
+      - key: DATABASE_URL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: SARVAM_API_KEY
+        sync: false
+      - key: HF_TOKEN
+        sync: false

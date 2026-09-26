@@ -125,7 +125,7 @@ export default function LibraryPage() {
       </section>
 
       <footer className="library-footer">
-        <span>Paramarsh Labs</span><span>Semantic understanding for regional stories</span><span>Schema v1.0</span>
+        <span></span><span>Semantic understanding for regional stories</span><span>Schema v1.0</span>
       </footer>
     </main>
   );

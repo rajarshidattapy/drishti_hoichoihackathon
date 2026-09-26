@@ -10,12 +10,14 @@ dependencies = [
   "pydantic-settings>=2.7,<3",
   "python-multipart>=0.0.20,<1",
   "sqlmodel>=0.0.24,<1",
+  "psycopg2-binary>=2.9,<3",
   "httpx>=0.28,<1",
   "PyYAML>=6.0,<7",
   "regex>=2024.11.6",
   "srt>=3.5,<4",
   "numpy>=1.26",
   "yt-dlp>=2025.1.1",
+  "imageio-ffmpeg>=0.5,<1",
 ]
 
 [project.optional-dependencies]

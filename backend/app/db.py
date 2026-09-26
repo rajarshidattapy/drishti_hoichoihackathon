@@ -46,8 +46,11 @@ class Database:
     def __init__(self, settings: Settings):
         self.settings = settings
         settings.data_dir.mkdir(parents=True, exist_ok=True)
-        connect_args = {"check_same_thread": False} if settings.sqlite_url.startswith("sqlite") else {}
-        self.engine = create_engine(settings.sqlite_url, connect_args=connect_args)
+        if settings.sqlite_url.startswith("sqlite"):
+            self.engine = create_engine(settings.sqlite_url, connect_args={"check_same_thread": False})
+        else:
+            # Neon suspends idle compute and drops connections; ping before use and recycle stale ones.
+            self.engine = create_engine(settings.sqlite_url, pool_pre_ping=True, pool_recycle=240)
         SQLModel.metadata.create_all(self.engine)
 
     def session(self) -> Session:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -21,7 +22,10 @@ def run(command: list[str], *, timeout: int = 7200) -> subprocess.CompletedProce
     return result
 
 
-def probe(ffprobe: str, source: Path) -> dict:
+def probe(ffprobe: str, source: Path, ffmpeg: str = "ffmpeg") -> dict:
+    """Read container/stream metadata. Falls back to parsing `ffmpeg -i` where ffprobe isn't installed."""
+    if not shutil.which(ffprobe):
+        return probe_with_ffmpeg(ffmpeg, source)
     result = run([
         ffprobe, "-v", "error", "-show_entries",
         "format=duration,format_name:stream=index,codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate",
@@ -42,6 +46,38 @@ def probe(ffprobe: str, source: Path) -> dict:
         "video_codec": video.get("codec_name"),
         "audio_codec": audio.get("codec_name") if audio else None,
         "format": payload.get("format", {}).get("format_name", ""),
+        "has_audio": audio is not None,
+    }
+
+
+def probe_with_ffmpeg(ffmpeg: str, source: Path) -> dict:
+    # `ffmpeg -i` with no output exits non-zero by design, so read stderr rather than the return code.
+    try:
+        result = subprocess.run([ffmpeg, "-hide_banner", "-i", str(source)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+    except FileNotFoundError as exc:
+        raise PipelineError(f"Required executable is unavailable: {ffmpeg}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise PipelineError("Media command timed out after 60 seconds") from exc
+    info = result.stderr
+    container = re.search(r"^Input #0, (.+?), from ", info, re.MULTILINE)
+    if container is None:
+        lines = info.strip().splitlines()
+        raise PipelineError(f"ffmpeg could not read the video: {lines[-1] if lines else 'unknown media error'}")
+    video = re.search(r"Stream #0:\d+.*?: Video: (\w+).*", info)
+    if video is None:
+        raise PipelineError("The uploaded file has no video stream.")
+    audio = re.search(r"Stream #0:\d+.*?: Audio: (\w+)", info)
+    duration = re.search(r"Duration: (\d+):(\d{2}):(\d{2}(?:\.\d+)?)", info)
+    size = re.search(r", (\d{2,5})x(\d{2,5})", video.group(0))
+    rate = re.search(r"([\d.]+)(k?) (?:fps|tbr)", video.group(0))
+    return {
+        "duration": int(duration[1]) * 3600 + int(duration[2]) * 60 + float(duration[3]) if duration else 0.0,
+        "fps": float(rate[1]) * (1000 if rate[2] else 1) if rate else 0.0,
+        "width": int(size[1]) if size else 0,
+        "height": int(size[2]) if size else 0,
+        "video_codec": video[1],
+        "audio_codec": audio[1] if audio else None,
+        "format": container[1],
         "has_audio": audio is not None,
     }
 

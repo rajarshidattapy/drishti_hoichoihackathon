@@ -135,9 +135,9 @@ def s01_ingest(ctx: StageContext) -> dict:
     source = Path(record.source_path)
     if not source.exists():
         raise ArtifactError("The registered source video no longer exists.")
-    metadata = probe(ctx.settings.ffprobe_binary, source)
+    metadata = probe(ctx.settings.ffprobe_binary, source, ctx.settings.ffmpeg_binary)
     if metadata["duration"] <= 0:
-        raise PipelineError("ffprobe returned an invalid video duration.")
+        raise PipelineError("Could not read a valid video duration.")
     proxy = ctx.root / "proxy.mp4"
     browser_ready = source.suffix.lower() == ".mp4" and metadata["video_codec"] == "h264" and (metadata["audio_codec"] in {"aac", None})
     if browser_ready and metadata["height"] <= 720:

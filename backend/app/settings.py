@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -19,6 +20,17 @@ def default_data_dir() -> Path:
 
 def running_on_vercel() -> bool:
     return bool(os.getenv("VERCEL") or os.getenv("VERCEL_ENV"))
+
+
+def resolve_ffmpeg(binary: str) -> str:
+    """Prefer ffmpeg on PATH; otherwise use the static build bundled with imageio-ffmpeg (no system packages needed)."""
+    if shutil.which(binary):
+        return binary
+    try:
+        import imageio_ffmpeg  # type: ignore[import-not-found]
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except (ImportError, RuntimeError):
+        return binary
 
 
 class Thresholds(BaseModel):
@@ -131,6 +143,7 @@ class Settings(BaseSettings):
         # A local .env must never redirect a Vercel function to its read-only bundle.
         if running_on_vercel():
             self.data_dir = Path(tempfile.gettempdir()) / "drishti"
+        self.ffmpeg_binary = resolve_ffmpeg(self.ffmpeg_binary)
 
     @property
     def episodes_dir(self) -> Path:

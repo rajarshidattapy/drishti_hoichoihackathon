@@ -2,6 +2,9 @@
 
 Hoichoi Drishti turns a Bengali episode into one semantic timeline for ad intelligence, subtitles, closed captions, and QC. This repository contains a Next.js 16 interface and a FastAPI backend based on the product and technical specifications in [`docs/`](docs/).
 
+<img width="1919" height="1105" alt="image" src="https://github.com/user-attachments/assets/91a50c77-e2f7-4924-af1c-25c7c391179f" />
+
+
 The app includes a populated demo episode, so all workspace interactions are available without model credentials or a source video.
 
 ## Run locally

@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Next.js / Node
+frontend/node_modules/
+frontend/.next/
+frontend/.env.local
+npm-debug.log*
+
+# Runtime episode artifacts
+data/episodes/*
+!data/episodes/.gitkeep
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

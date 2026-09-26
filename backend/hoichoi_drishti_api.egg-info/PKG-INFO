@@ -1,0 +1,22 @@
+Metadata-Version: 2.4
+Name: hoichoi-drishti-api
+Version: 0.1.0
+Summary: FastAPI service for the Hoichoi Drishti semantic timeline
+Requires-Python: >=3.11
+Requires-Dist: fastapi<1,>=0.115
+Requires-Dist: uvicorn[standard]<1,>=0.34
+Requires-Dist: pydantic<3,>=2.10
+Requires-Dist: pydantic-settings<3,>=2.7
+Requires-Dist: python-multipart<1,>=0.0.20
+Requires-Dist: sqlmodel<1,>=0.0.24
+Requires-Dist: httpx<1,>=0.28
+Requires-Dist: PyYAML<7,>=6.0
+Requires-Dist: regex>=2024.11.6
+Requires-Dist: srt<4,>=3.5
+Provides-Extra: dev
+Requires-Dist: pytest<9,>=8.3; extra == "dev"
+Provides-Extra: media
+Requires-Dist: Pillow<13,>=11; extra == "media"
+Provides-Extra: providers
+Requires-Dist: openai<3,>=1.75; extra == "providers"
+Requires-Dist: sarvamai<2,>=0.1; extra == "providers"

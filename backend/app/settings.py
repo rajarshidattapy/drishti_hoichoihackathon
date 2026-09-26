@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = BACKEND_ROOT.parent
 
 
 def default_data_dir() -> Path:
@@ -94,7 +95,7 @@ class Thresholds(BaseModel):
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=PROJECT_ROOT / "backend" / ".env",
+        env_file=BACKEND_ROOT / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -128,11 +129,13 @@ class Settings(BaseSettings):
 
     @property
     def brand_catalogue(self) -> Path:
-        return PROJECT_ROOT / "docs" / "brands.json"
+        canonical = PROJECT_ROOT / "docs" / "brands.json"
+        # A Vercel project rooted at backend/ cannot access repository-level docs/.
+        return canonical if canonical.is_file() else self.config_dir / "brands.json"
 
     @property
     def config_dir(self) -> Path:
-        return PROJECT_ROOT / "backend" / "config"
+        return BACKEND_ROOT / "config"
 
     @property
     def sqlite_url(self) -> str:

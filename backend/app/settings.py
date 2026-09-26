@@ -17,6 +17,10 @@ def default_data_dir() -> Path:
     return Path(tempfile.gettempdir()) / "drishti" if os.getenv("VERCEL") else PROJECT_ROOT / "data"
 
 
+def running_on_vercel() -> bool:
+    return bool(os.getenv("VERCEL") or os.getenv("VERCEL_ENV"))
+
+
 class Thresholds(BaseModel):
     # s02 / s03
     shot_scene_threshold: float = Field(default=0.35, ge=0, le=1)
@@ -122,6 +126,11 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     seed_demo: bool = True
     thresholds: Thresholds = Field(default_factory=Thresholds)
+
+    def model_post_init(self, __context: object) -> None:
+        # A local .env must never redirect a Vercel function to its read-only bundle.
+        if running_on_vercel():
+            self.data_dir = Path(tempfile.gettempdir()) / "drishti"
 
     @property
     def episodes_dir(self) -> Path:

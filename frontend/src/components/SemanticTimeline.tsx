@@ -106,7 +106,7 @@ export default function SemanticTimeline({ data, currentTime, onSeek }: { data: 
 
           {lanes.Sounds && data.audio_events.map((event) => <g key={event.event_id} transform={`translate(${x(event.start)},${laneY.Sounds + 8})`}><path d="M-5 1h3l4-5v13l-4-5h-3z" fill="#9AA3B6" /><path d="M5-2q4 4 0 8" fill="none" stroke="#9AA3B6" strokeWidth="1.5" /></g>)}
 
-          {lanes.Intensity && <path
+          {lanes.Intensity && data.curves.intensity.length > 0 && <path
             d={`${data.curves.intensity.filter(([time]) => time >= start && time <= end).map(([time, value], index) => `${index ? "L" : "M"}${x(time)},${laneY.Intensity + 29 - value * 27}`).join(" ")} L1000,${laneY.Intensity + 30} L0,${laneY.Intensity + 30} Z`}
             fill="url(#intensityFill)"
             stroke="#FF7D7D"

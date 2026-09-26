@@ -19,7 +19,7 @@ class EpisodeSummary(BaseModel):
     id: str
     title: str
     duration: float
-    status: Literal["queued", "processing", "processed", "failed"]
+    status: Literal["downloading", "queued", "processing", "processed", "failed"]
     progress: int = Field(ge=0, le=100)
     created_at: str
     video_available: bool = False
@@ -151,6 +151,17 @@ class AdCandidate(BaseModel):
     context_entity_ids: list[str]
     reason: str
     selected: bool
+    # Decision trace (pipeline/ads.py): kept on the timeline so selection can be re-run and inspected.
+    scene_title: str = ""
+    context: dict[str, list[str]] = Field(default_factory=dict)
+    hard_rejections: list[str] = Field(default_factory=list)
+    eligible: bool = True
+    rejections: list[str] = Field(default_factory=list)
+    decision_note: str | None = None
+    brand: dict[str, Any] | None = None
+    creative: dict[str, Any] | None = None
+    brand_ranking: list[dict[str, Any]] = Field(default_factory=list)
+    excluded_brands: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SubtitleCue(BaseModel):
@@ -182,6 +193,7 @@ class SemanticTimeline(BaseModel):
     audio_events: list[AudioEvent]
     entities: list[Entity]
     ad_candidates: list[AdCandidate]
+    ad_decision: dict[str, Any] = Field(default_factory=dict)
     subtitles: dict[str, Any]
     subtitle_cues: list[SubtitleCue]
     cc_cues: list[SubtitleCue]

@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import math
 from datetime import UTC, datetime
+from pathlib import Path
+
+from pipeline.ads import decide, generate_candidates, load_catalogue
 
 from .models import EpisodeSummary, SemanticTimeline, StageStatus
+from .settings import Thresholds
 
 
 DEMO_ID = "demo-episode-102"
@@ -83,7 +87,7 @@ def _scene(
     }
 
 
-def build_demo_timeline() -> SemanticTimeline:
+def build_demo_timeline(catalogue: Path, thresholds: Thresholds) -> SemanticTimeline:
     utterances = [
         {"utt_id": "utt_001", "start": 22, "end": 31, "speaker": "SPK_A", "speaker_name": "মিতা", "text_raw": "আজ এত দেরি কেন", "text": "আজ এত দেরি কেন?", "confidence": 0.96},
         {"utt_id": "utt_002", "start": 34, "end": 44, "speaker": "SPK_B", "speaker_name": "অনির্বাণ", "text_raw": "অফিসে মিটিং ছিল", "text": "অফিসে মিটিং ছিল।", "confidence": 0.93},
@@ -132,26 +136,6 @@ def build_demo_timeline() -> SemanticTimeline:
             "sentiment": "negative", "presence": "mentioned_only", "confidence": 0.97,
         },
     ]
-    ads = [
-        {
-            "cand_id": "ad_001", "time": 253, "scene_id": "scene_002", "kind": "scene_boundary", "pause_len": 1.8,
-            "score": {"pause": 0.72, "scene_end": 1, "low_intensity": 0.78, "context_match": 0.85, "speech_penalty": 0, "cliffhanger_penalty": 0, "total": 0.84},
-            "disruption": "low", "matched_categories": ["mobile"], "context_entity_ids": ["entity_phone"],
-            "reason": "After ‘ফোনের কথা’; 1.8 s pause, low intensity, and a positive smartphone discussion nearby.", "selected": True,
-        },
-        {
-            "cand_id": "ad_002", "time": 557, "scene_id": "scene_004", "kind": "scene_boundary", "pause_len": 2.1,
-            "score": {"pause": 0.84, "scene_end": 1, "low_intensity": 0.81, "context_match": 0.79, "speech_penalty": 0, "cliffhanger_penalty": 0, "total": 0.86},
-            "disruption": "low", "matched_categories": ["food_delivery"], "context_entity_ids": ["entity_biryani"],
-            "reason": "After ‘রাতের খাবার’; a clean pause follows a low-intensity food moment.", "selected": False,
-        },
-        {
-            "cand_id": "ad_003", "time": 405, "scene_id": "scene_003", "kind": "scene_boundary", "pause_len": 0.5,
-            "score": {"pause": 0.2, "scene_end": 1, "low_intensity": 0.18, "context_match": 0, "speech_penalty": 0, "cliffhanger_penalty": 0.6, "total": 0.19},
-            "disruption": "high", "matched_categories": [], "context_entity_ids": [],
-            "reason": "Scene boundary, but it follows a cliffhanger and carries high narrative intensity.", "selected": False,
-        },
-    ]
     events = [
         {"event_id": "event_01", "label": "Door", "label_bn": "দরজা খোলার শব্দ", "start": 18, "end": 20, "score": 0.88, "in_cc": True},
         {"event_id": "event_03", "label": "Thunder", "label_bn": "বজ্রপাত", "start": 350, "end": 352, "score": 0.76, "in_cc": True},
@@ -171,6 +155,19 @@ def build_demo_timeline() -> SemanticTimeline:
         {"issue_id": "qc_003", "severity": "warn", "rule": "timing_drift", "time": 747, "cue_idx": 9, "message": "Cue starts 0.6 s after the detected speech onset.", "suggestion": "Move the cue start 0.6 s earlier."},
     ]
     intensity = [[float(t), round(max(0.08, min(0.96, next(s["semantic"]["narrative_intensity"] for s in scenes if s["start"] <= t <= s["end"]) + math.sin(t / 31) * 0.07)), 3)] for t in range(0, 865, 12)]
+    # Ad decisions come from the same engine as real episodes. Pauses are derived from the data:
+    # a short silence at every scene cut and at every long gap between lines.
+    silences = [{"start": s["end"] - .9, "end": s["end"] + .9, "duration": 1.8} for s in scenes[:-1]]
+    for a, b in zip(utterances, utterances[1:]):
+        if b["start"] - a["end"] > 3 and not any(s["start"] <= (a["end"] + b["start"]) / 2 <= s["end"] for s in silences):
+            middle = (a["end"] + b["start"]) / 2
+            silences.append({"start": middle - .8, "end": middle + .8, "duration": 1.6})
+    protected = {s["scene_id"] for s in scenes if s["semantic"]["is_cliffhanger"]} | {scenes[-1]["scene_id"]}
+    candidates = generate_candidates(duration=864, scenes=scenes, silences=silences, utterances=utterances, entities=entities,
+                                     intensity=intensity, protected=protected, t=thresholds)
+    ads, decision = decide(candidates, load_catalogue(catalogue), duration=864, min_gap=thresholds.ad_default_min_gap,
+                           n_breaks=max(1, math.floor(864 / 600)),
+                           blocked=(thresholds.ad_blocked_head_seconds, thresholds.ad_blocked_tail_seconds), min_safety=thresholds.ad_min_safety)
     return SemanticTimeline(
         episode={"id": DEMO_ID, "title": DEMO_EPISODE.title, "duration": 864, "fps": 25, "resolution": "1920×1080", "video_available": False},
         scenes=scenes,
@@ -179,6 +176,7 @@ def build_demo_timeline() -> SemanticTimeline:
         audio_events=events,
         entities=entities,
         ad_candidates=ads,
+        ad_decision=decision,
         subtitles={"sub_srt": "/episodes/demo-episode-102/subs/sub.srt", "sub_vtt": "/episodes/demo-episode-102/subs/sub.vtt", "cc_srt": "/episodes/demo-episode-102/subs/cc.srt", "cc_vtt": "/episodes/demo-episode-102/subs/cc.vtt", "cue_count": len(subtitle_cues)},
         subtitle_cues=subtitle_cues,
         cc_cues=cc_cues,
@@ -187,6 +185,4 @@ def build_demo_timeline() -> SemanticTimeline:
         processing={"total_seconds": 90.3, "llm_cost_usd": 1.84, "models": ["gpt-4.1-mini", "Sarvam Saarika", "SigLIP"], "cached_stages": 18},
     )
 
-
-DEMO_TIMELINE = build_demo_timeline()
 

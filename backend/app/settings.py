@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -7,6 +9,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def default_data_dir() -> Path:
+    """Use Vercel's only writable filesystem location for the serverless demo."""
+    return Path(tempfile.gettempdir()) / "drishti" if os.getenv("VERCEL") else PROJECT_ROOT / "data"
 
 
 class Thresholds(BaseModel):
@@ -28,10 +35,14 @@ class Thresholds(BaseModel):
     audio_event_min_cc_seconds: float = Field(default=0.8, ge=0)
     audio_event_max_dialogue_overlap: float = Field(default=0.7, ge=0, le=1)
     # s10
-    scene_weight_visual: float = 0.35
-    scene_weight_location: float = 0.25
+    scene_weight_visual: float = 0.30
+    scene_weight_location: float = 0.20
+    scene_weight_activity: float = 0.10
     scene_weight_speakers: float = 0.20
-    scene_weight_silence: float = 0.20
+    scene_weight_dialogue: float = 0.10
+    scene_weight_silence: float = 0.10
+    # Long pauses far from any shot cut are scene-boundary candidates too (dialogue-driven scene changes).
+    scene_pause_cut_seconds: float = Field(default=2.0, gt=0)
     scene_boundary_threshold: float = Field(default=0.45, ge=0, le=1)
     scene_silence_at_cut_seconds: float = Field(default=1.0, ge=0)
     scene_speaker_window_seconds: float = Field(default=30.0, gt=0)
@@ -59,6 +70,7 @@ class Thresholds(BaseModel):
     ad_context_lookback: float = Field(default=60.0, ge=0)
     ad_speech_guard_seconds: float = Field(default=0.3, ge=0)
     ad_cliffhanger_guard_seconds: float = Field(default=10.0, ge=0)
+    ad_min_safety: float = Field(default=0.45, ge=0, le=1)
     # s15 / s16
     subtitle_max_line_graphemes: int = Field(default=42, gt=0)
     subtitle_max_lines: int = Field(default=2, gt=0)
@@ -87,7 +99,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    data_dir: Path = PROJECT_ROOT / "data"
+    data_dir: Path = Field(default_factory=default_data_dir)
     database_url: str | None = None
     openai_api_key: str | None = None
     sarvam_api_key: str | None = None
@@ -113,6 +125,10 @@ class Settings(BaseSettings):
     @property
     def episodes_dir(self) -> Path:
         return self.data_dir / "episodes"
+
+    @property
+    def brand_catalogue(self) -> Path:
+        return PROJECT_ROOT / "docs" / "brands.json"
 
     @property
     def config_dir(self) -> Path:

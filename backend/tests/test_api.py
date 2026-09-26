@@ -71,3 +71,33 @@ def test_real_upload_uses_pipeline_and_fails_actionably_without_sarvam(client: T
     assert timeline.status_code == 409
     assert timeline.json()["detail"]["stage"] == "s06_stt"
 
+
+
+def test_vmap_inserts_selected_ad_with_a_playable_creative(client: TestClient):
+    xml = client.get("/episodes/demo-episode-102/ads/vmap.xml").text
+    assert xml.count("<vmap:AdBreak") >= 1 and "<MediaFile" in xml
+    creative = xml.split("<![CDATA[")[1].split("]]>")[0]
+    video = client.get(creative.replace("http://testserver", ""))
+    assert video.status_code == 200 and video.headers["content-type"] == "video/mp4" and len(video.content) > 1000
+
+
+def test_ad_debug_and_manual_override_respect_constraints(client: TestClient):
+    debug = client.get("/episodes/demo-episode-102/ads/debug").json()
+    assert debug["decision"]["outcome"] in {"breaks", "no_break"} and debug["catalogue"]
+    ineligible = next(c for c in debug["candidates"] if not c["eligible"])
+    response = client.patch(f"/episodes/demo-episode-102/ads/{ineligible['cand_id']}", json={"selected": True})
+    assert response.status_code == 409
+    eligible = next(c for c in debug["candidates"] if c["eligible"] and not c["selected"])
+    selected = client.patch(f"/episodes/demo-episode-102/ads/{eligible['cand_id']}", json={"selected": True}).json()
+    assert selected["selected"] and selected["brand"]
+    assert f'breakId="{eligible["cand_id"]}"' in client.get("/episodes/demo-episode-102/ads/vmap.xml").text
+
+
+def test_no_break_when_nothing_satisfies_constraints(client: TestClient):
+    candidates = client.get("/episodes/demo-episode-102/ads", params={"blocked": "432,432"}).json()
+    assert not any(c["selected"] for c in candidates)
+    assert client.get("/episodes/demo-episode-102/ads/debug").json()["decision"]["outcome"] == "no_break"
+
+
+def test_url_ingestion_rejects_other_hosts(client: TestClient):
+    assert client.post("/episodes", json={"url": "https://example.com/video.mp4"}).status_code == 422

@@ -4,7 +4,7 @@ from pipeline.qc import run_qc
 from pipeline.runner import descendants, resolve_stage_id
 from pipeline.sarvam import mark_overlaps
 from pipeline.scenes import aggregate_visual, enforce_min_length, merge_scenes, score_boundaries
-from pipeline.scoring import cliffhanger_blocked, context_match, disruption, score_candidate
+from pipeline.scoring import cliffhanger_blocked, context_match
 from pipeline.stages.core import build_chunks, edit_ratio, merge_short_shots, smooth_curve
 from pipeline.subtitles import format_utterances
 
@@ -15,16 +15,32 @@ def tag(location, objects=(), brands=()):
     return {"location": location, "indoor": True, "objects": list(objects), "visible_brands": list(brands), "activity": "talking", "visual_mood": "calm", "people_count": 2, "confidence": .8}
 
 
-def test_boundary_scoring_combines_visual_location_speaker_and_silence():
+def test_boundary_scoring_uses_picture_place_activity_characters_dialogue_and_silence():
     shots = [
         {"shot_id": "a", "start": 0, "end": 30, "dhash": "0000000000000000"},
         {"shot_id": "b", "start": 30, "end": 60, "dhash": "ffffffffffffffff"},
     ]
-    utterances = [{"speaker": "SPK_A", "start": 10, "end": 12}, {"speaker": "SPK_B", "start": 40, "end": 42}]
+    utterances = [
+        {"speaker": "SPK_A", "start": 10, "end": 12, "text": "বাজারে মাছ কিনতে যাব"},
+        {"speaker": "SPK_B", "start": 40, "end": 42, "text": "অফিসের মিটিং শেষ হয়নি"},
+    ]
     silences = [{"start": 29.5, "end": 31, "duration": 1.5}]
-    [boundary] = score_boundaries(shots, {"a": tag("kitchen"), "b": tag("street")}, utterances, silences, T)
-    assert boundary["components"] == {"visual": 1.0, "location": 1.0, "speakers": 1.0, "silence": 1.0}
+    walking = {**tag("street"), "activity": "walking"}
+    [boundary] = score_boundaries(shots, {"a": tag("kitchen"), "b": walking}, utterances, silences, T)
+    assert boundary["components"] == {"visual": 1.0, "location": 1.0, "activity": 1.0, "speakers": 1.0, "dialogue": 1.0, "silence": 1.0}
     assert boundary["score"] == 1.0
+
+
+def test_long_pause_without_a_shot_cut_is_a_scene_boundary_candidate():
+    shots = [{"shot_id": "a", "start": 0, "end": 120, "dhash": "00"}, {"shot_id": "b", "start": 120, "end": 130, "dhash": "00"}]
+    utterances = [
+        {"speaker": "SPK_A", "speaker_name": "Mita", "start": 40, "end": 45, "text": "চা খাবে?"},
+        {"speaker": "SPK_B", "speaker_name": "Rono", "start": 70, "end": 75, "text": "ট্রেন কখন ছাড়বে"},
+    ]
+    silences = [{"start": 58, "end": 62, "duration": 4.0}]
+    boundaries = score_boundaries(shots, {"a": tag("kitchen"), "b": tag("kitchen")}, utterances, silences, T)
+    pause_cut = next(b for b in boundaries if not b["shot_cut"])
+    assert pause_cut["time"] == 60 and pause_cut["components"]["speakers"] == 1.0 and pause_cut["components"]["dialogue"] == 1.0
 
 
 def test_min_scene_length_merges_weakest_boundary_first():
@@ -57,9 +73,7 @@ def test_context_match_uses_sentiment_and_presence_weights():
     assert [hit[0]["entity_id"] for hit in hits] == ["e1", "e2"]
 
 
-def test_penalties_force_high_disruption_and_cliffhanger_end_is_allowed():
-    score = score_candidate(pause_len=2, scene_boundary=True, distance_to_end=0, intensity=.1, context_match=0, speech=True, cliffhanger=False)
-    assert disruption(score) == "high"
+def test_cliffhanger_buildup_is_protected_but_its_end_is_allowed():
     scenes = [{"scene_id": "s1", "start": 0, "end": 100}]
     curve = [[float(t), .9 if t == 50 else .3] for t in range(100)]
     assert cliffhanger_blocked(55, scenes, curve, 10, 2, {"s1"})

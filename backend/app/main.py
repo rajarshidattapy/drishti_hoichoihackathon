@@ -14,33 +14,39 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFi
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
+from pipeline.ads import decide, load_catalogue, select_brand_for
 from pipeline.errors import PipelineError
-from pipeline.runner import PipelineCoordinator, PipelineRunner, STAGES, STAGE_PAIRS, resolve_stage_id
-from pipeline.scoring import select_candidates
+from pipeline.fetch import validate_url
+from pipeline.partial import assemble_partial
+from pipeline.runner import DOWNLOAD_STAGE, PipelineCoordinator, PipelineRunner, STAGES, STAGE_PAIRS, resolve_stage_id
 from pipeline.subtitles import write_srt, write_vtt
+from pipeline.vmap import build_vmap, ensure_creative
 
 from .artifacts import ArtifactStore
 from .db import Database, EpisodeRecord
-from .demo_data import DEMO_EPISODE, DEMO_ID, DEMO_TIMELINE
+from .demo_data import DEMO_EPISODE, DEMO_ID, build_demo_timeline
 from .models import AdSelectionPatch, EpisodeSummary, RerunRequest, SemanticTimeline
 from .settings import Settings
 
 
 def _seed_demo(settings: Settings, database: Database, store: ArtifactStore) -> None:
-    if not settings.seed_demo or database.get_episode_record(DEMO_ID):
+    if not settings.seed_demo:
         return
     root = store.ensure_episode(DEMO_ID)
-    database.create_episode(EpisodeRecord(
-        id=DEMO_ID,
-        title=DEMO_EPISODE.title,
-        source_path="",
-        duration=DEMO_EPISODE.duration,
-        status="processed",
-        progress=100,
-        video_available=False,
-    ), STAGE_PAIRS)
-    for stage in STAGES:
-        database.update_stage(DEMO_ID, stage.id, status="done", elapsed=.01, input_hash="seed", started_at=datetime.now(UTC), finished_at=datetime.now(UTC))
+    if database.get_episode_record(DEMO_ID) is None:
+        database.create_episode(EpisodeRecord(
+            id=DEMO_ID,
+            title=DEMO_EPISODE.title,
+            source_path="",
+            duration=DEMO_EPISODE.duration,
+            status="processed",
+            progress=100,
+            video_available=False,
+        ), STAGE_PAIRS)
+        for stage in STAGES:
+            database.update_stage(DEMO_ID, stage.id, status="done", elapsed=.01, input_hash="seed", started_at=datetime.now(UTC), finished_at=datetime.now(UTC))
+    # Rebuilt on every start so the demo always reflects the current decision engine and catalogue.
+    DEMO_TIMELINE = build_demo_timeline(settings.brand_catalogue, settings.thresholds)
     store.write_json(root / "outputs" / "semantic_timeline.json", DEMO_TIMELINE)
     store.write_text(root / "outputs" / "episode_bn.srt", write_srt([cue.model_dump() for cue in DEMO_TIMELINE.subtitle_cues]))
     store.write_text(root / "outputs" / "episode_bn.vtt", write_vtt([cue.model_dump() for cue in DEMO_TIMELINE.subtitle_cues]))
@@ -65,6 +71,8 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
         for record in database.list_episode_records():
             if record.status in {"queued", "processing"} and record.source_path:
                 coordinator.enqueue(record.id)
+            elif record.status == "downloading" and store.source_url_path(record.id).exists():
+                coordinator.enqueue_url(record.id, store.source_url_path(record.id).read_text(encoding="utf-8").strip())
         yield
         coordinator.shutdown()
         database.close()
@@ -92,6 +100,9 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
         if record is None:
             raise HTTPException(404, "Episode not found.")
         return record
+
+    def save_timeline(episode_id: str, timeline: SemanticTimeline) -> None:
+        store.write_json(store.output_path(episode_id, "semantic_timeline.json"), timeline)
 
     def timeline_or_409(episode_id: str) -> SemanticTimeline:
         record = episode_or_404(episode_id)
@@ -121,12 +132,24 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
         path: Annotated[str | None, Form()] = None,
         title: Annotated[str | None, Form()] = None,
     ) -> EpisodeSummary:
+        url = None
         if request.headers.get("content-type", "").startswith("application/json"):
             payload = await request.json()
-            path = payload.get("path")
-            title = payload.get("title")
+            path, title, url = payload.get("path"), payload.get("title"), payload.get("url")
+        if url:
+            # Linked video: download first, then the same pipeline as an upload.
+            try:
+                url = validate_url(url)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            episode_id = f"ep-{uuid4().hex[:12]}"
+            store.ensure_episode(episode_id)
+            store.source_url_path(episode_id).write_text(url, encoding="utf-8")
+            database.create_episode(EpisodeRecord(id=episode_id, title=title or url, source_path="", status="downloading", progress=0), [DOWNLOAD_STAGE, *STAGE_PAIRS])
+            coordinator.enqueue_url(episode_id, url)
+            return database.summary(episode_or_404(episode_id))
         if file is None and not path:
-            raise HTTPException(422, "Upload a video or provide a local path.")
+            raise HTTPException(422, "Upload a video, paste a link, or provide a local path.")
 
         episode_id = f"ep-{uuid4().hex[:12]}"
         root = store.ensure_episode(episode_id)
@@ -203,7 +226,14 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
         return database.summary(episode_or_404(episode_id))
 
     @api.get("/episodes/{episode_id}/timeline", response_model=SemanticTimeline)
-    def get_timeline(episode_id: str) -> SemanticTimeline:
+    def get_timeline(episode_id: str, partial: bool = False) -> SemanticTimeline:
+        """With partial=true, returns whatever is ready so far while the episode is still processing."""
+        if partial and not store.output_path(episode_id, "semantic_timeline.json").exists():
+            record = episode_or_404(episode_id)
+            timeline = assemble_partial(store, database, episode_id)
+            if timeline is None:
+                raise HTTPException(409, {"message": "Nothing is ready yet.", "status": record.status})
+            return timeline
         return timeline_or_409(episode_id)
 
     @api.get("/episodes/{episode_id}/scenes/{scene_id}")
@@ -221,31 +251,73 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
     @api.get("/episodes/{episode_id}/ads")
     def get_ads(
         episode_id: str,
-        min_gap: int = Query(480, ge=0),
-        n_breaks: int = Query(2, ge=1, le=20),
-        blocked: str = Query("120,120"),
+        min_gap: float | None = Query(None, ge=0),
+        n_breaks: int | None = Query(None, ge=1, le=20),
+        blocked: str | None = Query(None),
     ) -> list[dict]:
+        """Re-run the decision pipeline over cached candidates with new settings and persist the result."""
         timeline = timeline_or_409(episode_id)
+        t = settings.thresholds
+        duration = float(timeline.episode["duration"])
         try:
-            blocked_head, blocked_tail = [float(value) for value in blocked.split(",", 1)]
+            head, tail = [float(v) for v in blocked.split(",", 1)] if blocked else (t.ad_blocked_head_seconds, t.ad_blocked_tail_seconds)
         except (ValueError, TypeError) as exc:
             raise HTTPException(422, "blocked must be 'start_seconds,end_seconds'.") from exc
-        candidates = [
-            candidate.model_dump() for candidate in timeline.ad_candidates
-            if blocked_head <= candidate.time <= float(timeline.episode["duration"]) - blocked_tail
-        ]
-        return select_candidates(candidates, min_gap, n_breaks)
+        decided, summary = decide(
+            [c.model_dump() for c in timeline.ad_candidates], load_catalogue(settings.brand_catalogue), duration=duration,
+            min_gap=t.ad_default_min_gap if min_gap is None else min_gap,
+            n_breaks=n_breaks or max(1, int(duration // 600)), blocked=(head, tail), min_safety=t.ad_min_safety,
+        )
+        save_timeline(episode_id, SemanticTimeline.model_validate({**timeline.model_dump(), "ad_candidates": decided, "ad_decision": summary}))
+        return decided
 
     @api.patch("/episodes/{episode_id}/ads/{candidate_id}")
     def patch_ad(episode_id: str, candidate_id: str, payload: AdSelectionPatch) -> dict:
+        """Manual override. Hard constraints and brand safety still apply."""
         timeline = timeline_or_409(episode_id)
-        candidate = next((item for item in timeline.ad_candidates if item.cand_id == candidate_id), None)
+        data = timeline.model_dump()
+        candidate = next((c for c in data["ad_candidates"] if c["cand_id"] == candidate_id), None)
         if candidate is None:
             raise HTTPException(404, "Ad candidate not found.")
-        candidate.selected = payload.selected
-        store.write_json(store.output_path(episode_id, "semantic_timeline.json"), timeline)
-        store.write_json(store.output_path(episode_id, "ad_cuepoints.json"), [item.model_dump() for item in timeline.ad_candidates])
-        return candidate.model_dump()
+        if payload.selected:
+            if not candidate["eligible"]:
+                raise HTTPException(409, f"This position violates: {', '.join(candidate['rejections'])}.")
+            candidate.update(select_brand_for(candidate, load_catalogue(settings.brand_catalogue)))
+            if candidate["brand"] is None:
+                raise HTTPException(409, "No advertiser in the catalogue is brand-safe for this position.")
+        candidate["selected"] = payload.selected
+        candidate["decision_note"] = "manual_select" if payload.selected else "manual_unselect"
+        chosen = [c for c in data["ad_candidates"] if c["selected"] and c["brand"]]
+        data["ad_decision"] = {**data["ad_decision"], "outcome": "breaks" if chosen else "no_break",
+                               "selected": [{"cand_id": c["cand_id"], "time": c["time"], "brand_id": c["brand"]["brand_id"], "creative_id": (c.get("creative") or {}).get("id")} for c in chosen]}
+        save_timeline(episode_id, SemanticTimeline.model_validate(data))
+        return candidate
+
+    @api.get("/episodes/{episode_id}/ads/vmap.xml")
+    def get_vmap(episode_id: str, request: Request) -> Response:
+        timeline = timeline_or_409(episode_id)
+        creative = str(request.base_url).rstrip("/") + "/ads/creatives/{brand_id}/{creative_id}.mp4"
+        xml = build_vmap([c.model_dump() for c in timeline.ad_candidates], load_catalogue(settings.brand_catalogue), creative)
+        return Response(xml, media_type="application/xml", headers={"Cache-Control": "no-store"})
+
+    @api.get("/episodes/{episode_id}/ads/debug")
+    def get_ad_debug(episode_id: str) -> dict:
+        """Everything behind the ad decision: settings, per-candidate constraints, scores, brand rankings and exclusions."""
+        timeline = timeline_or_409(episode_id)
+        return {"decision": timeline.ad_decision, "catalogue": load_catalogue(settings.brand_catalogue),
+                "candidates": [c.model_dump() for c in timeline.ad_candidates]}
+
+    @api.get("/ads/creatives/{brand_id}/{creative_id}.mp4")
+    def get_creative(brand_id: str, creative_id: str) -> FileResponse:
+        brand = next((b for b in load_catalogue(settings.brand_catalogue) if b["brand_id"] == brand_id), None)
+        creative = next((c for c in (brand or {}).get("creatives", []) if c["id"] == creative_id), None)
+        if brand is None or creative is None:
+            raise HTTPException(404, "Unknown brand or creative.")
+        try:
+            path = ensure_creative(brand, creative, settings.brand_catalogue.parent, settings.data_dir / "creatives", settings.ffmpeg_binary)
+        except PipelineError as exc:
+            raise HTTPException(500, str(exc)) from exc
+        return FileResponse(path, media_type="video/mp4")
 
     @api.get("/episodes/{episode_id}/frames/{name}")
     def get_frame(episode_id: str, name: str) -> FileResponse:
@@ -300,9 +372,9 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
         if name == "ad_cuepoints.csv":
             stream = io.StringIO()
             writer = csv.writer(stream)
-            writer.writerow(["candidate_id", "time_seconds", "score", "selected", "categories", "reason"])
-            for candidate in timeline.ad_candidates:
-                writer.writerow([candidate.cand_id, candidate.time, candidate.score.total, candidate.selected, "|".join(candidate.matched_categories), candidate.reason])
+            writer.writerow(["candidate_id", "time_seconds", "safety_score", "eligible", "selected", "brand", "rejections", "reason"])
+            for c in timeline.ad_candidates:
+                writer.writerow([c.cand_id, c.time, c.score.total, c.eligible, c.selected, (c.brand or {}).get("brand_id", ""), "|".join(c.rejections), c.reason])
             return Response(stream.getvalue(), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{name}"'})
         raise HTTPException(404, "Export not found.")
 

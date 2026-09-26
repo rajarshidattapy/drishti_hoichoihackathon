@@ -26,9 +26,8 @@ from pipeline.media import detect_silences, probe, run
 from pipeline.qc import run_qc
 from pipeline.sarvam import SarvamClient, mark_overlaps
 from pipeline.scenes import UNKNOWN_VISUAL, aggregate_visual, color_distance, build_scenes, candidate_boundaries, merge_scenes, scene_digest, score_boundaries
-from pipeline.scoring import (
-    cliffhanger_blocked, context_match, curve_mean, disruption, reason_text, score_candidate, select_candidates, speech_near,
-)
+from pipeline.ads import decide, generate_candidates, load_catalogue
+from pipeline.scoring import curve_mean
 from pipeline.subtitles import format_utterances, write_srt, write_vtt
 
 
@@ -925,60 +924,19 @@ def s13_scene_semantics(ctx: StageContext) -> dict:
 
 def s14_ad_scoring(ctx: StageContext) -> dict:
     duration = ctx.stage("s01_ingest")["duration"]
-    silences = ctx.stage("s05_vad")["silences"]
-    utterances = ctx.stage("s07_transcript_clean")["utterances"]
-    entities = ctx.stage("s12_vision_targeted")["entities"]
     semantics = ctx.stage("s13_scene_semantics")
-    scenes, intensity, protected = semantics["scenes"], semantics["intensity"], set(semantics["protected_scenes"])
     t = ctx.t
-    head, tail = t.ad_blocked_head_seconds, duration - t.ad_blocked_tail_seconds
-
-    raw: list[tuple[str, float, float, dict]] = []  # (kind, time, pause_len, scene)
-    used_silences: set[int] = set()
-    for scene in scenes[:-1]:
-        cut = scene["end"]
-        near = [(i, s) for i, s in enumerate(silences) if abs((s["start"] + s["end"]) / 2 - cut) <= t.ad_snap_to_silence_seconds]
-        if near:
-            i, silence = min(near, key=lambda item: abs((item[1]["start"] + item[1]["end"]) / 2 - cut))
-            used_silences.add(i)
-            raw.append(("scene_boundary", round((silence["start"] + silence["end"]) / 2, 3), silence["duration"], scene))
-        else:
-            raw.append(("scene_boundary", cut, 0.0, scene))
-    for i, silence in enumerate(silences):
-        if i in used_silences or silence["duration"] < t.min_ad_pause_seconds:
-            continue
-        midpoint = (silence["start"] + silence["end"]) / 2
-        scene = next((s for s in scenes if s["start"] < midpoint < s["end"]), None)
-        if scene and scene["semantic"]["narrative_intensity"] < t.ad_pause_intensity_ceiling:
-            raw.append(("dialogue_pause", round(midpoint, 3), silence["duration"], scene))
-
-    candidates = []
-    for kind, time_value, pause_len, scene in sorted(raw, key=lambda item: item[1]):
-        if not head <= time_value <= tail:
-            continue
-        window_intensity = curve_mean(intensity, time_value - 20, time_value + 5)
-        context, hits = context_match(time_value, entities, t.ad_context_lookback)
-        boundary = kind == "scene_boundary"
-        score = score_candidate(
-            pause_len=pause_len, scene_boundary=boundary, distance_to_end=max(0.0, scene["end"] - time_value),
-            intensity=scene["semantic"]["narrative_intensity"] if window_intensity is None else window_intensity,
-            context_match=context, speech=speech_near(time_value, utterances, t.ad_speech_guard_seconds),
-            cliffhanger=cliffhanger_blocked(time_value, scenes, intensity, t.ad_cliffhanger_guard_seconds, t.ad_snap_to_silence_seconds, protected),
-        )
-        matched = [hit for hit in hits if hit[1] > 0]
-        candidates.append({
-            "cand_id": f"ad_{len(candidates) + 1:04d}", "time": time_value, "scene_id": scene["scene_id"], "kind": kind,
-            "pause_len": round(pause_len, 3), "score": score, "disruption": disruption(score),
-            "matched_categories": sorted({c for entity, _, _ in matched for c in entity.get("ad_categories", [])}),
-            "context_entity_ids": [entity["entity_id"] for entity, _, _ in matched],
-            "reason": reason_text(kind, scene, pause_len, score, matched, time_value), "selected": False,
-        })
-    count = max(1, math.floor(duration / 600))
-    ranked = select_candidates(candidates, t.ad_default_min_gap, count)
-    return {
-        "candidates": sorted(ranked, key=lambda c: c["time"]),
-        "settings": {"min_gap": t.ad_default_min_gap, "n_breaks": count, "blocked": [t.ad_blocked_head_seconds, t.ad_blocked_tail_seconds]},
-    }
+    candidates = generate_candidates(
+        duration=duration, scenes=semantics["scenes"], silences=ctx.stage("s05_vad")["silences"],
+        utterances=ctx.stage("s07_transcript_clean")["utterances"], entities=ctx.stage("s12_vision_targeted")["entities"],
+        intensity=semantics["intensity"], protected=set(semantics["protected_scenes"]), t=t,
+    )
+    decided, summary = decide(
+        candidates, load_catalogue(ctx.settings.brand_catalogue), duration=duration, min_gap=t.ad_default_min_gap,
+        n_breaks=max(1, math.floor(duration / 600)), blocked=(t.ad_blocked_head_seconds, t.ad_blocked_tail_seconds),
+        min_safety=t.ad_min_safety,
+    )
+    return {"candidates": decided, "decision": summary}
 
 
 def s15_subtitles(ctx: StageContext) -> dict:
@@ -1055,7 +1013,7 @@ def s18_assemble(ctx: StageContext) -> dict:
             "sub_srt": subs["srt"], "sub_vtt": subs["vtt"], "cc_srt": cc["srt"], "cc_vtt": cc["vtt"],
             "cue_count": len(subs["cues"]), "cc_cue_count": len(cc["cues"]), "qc_summary": qc["summary"],
         },
-        "subtitle_cues": subs["cues"], "cc_cues": cc["cues"], "qc": qc["issues"],
+        "subtitle_cues": subs["cues"], "cc_cues": cc["cues"], "qc": qc["issues"], "ad_decision": ads["decision"],
         "curves": {"intensity": semantics["intensity"], "loudness": audio["loudness"]},
         "processing": {
             "total_seconds": round(sum(s.elapsed or 0 for s in stage_records), 3),
@@ -1066,10 +1024,4 @@ def s18_assemble(ctx: StageContext) -> dict:
         },
     })
     ctx.store.write_json(ctx.root / "outputs" / "semantic_timeline.json", timeline)
-    ctx.store.write_json(ctx.root / "outputs" / "ad_cuepoints.json", ads["candidates"])
-    lines = ["candidate_id,time_seconds,score,selected,kind,disruption,categories,reason"]
-    for c in ads["candidates"]:
-        reason = c["reason"].replace('"', "'")
-        lines.append(f"{c['cand_id']},{c['time']},{c['score']['total']},{c['selected']},{c['kind']},{c['disruption']},{'|'.join(c['matched_categories'])},\"{reason}\"")
-    ctx.store.write_text(ctx.root / "outputs" / "ad_cuepoints.csv", "\n".join(lines) + "\n")
     return {"timeline": "outputs/semantic_timeline.json", "schema_version": "1.0"}

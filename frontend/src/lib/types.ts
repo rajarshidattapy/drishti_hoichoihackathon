@@ -12,7 +12,7 @@ export type Episode = {
   id: string;
   title: string;
   duration: number;
-  status: "queued" | "processing" | "processed" | "failed";
+  status: "downloading" | "queued" | "processing" | "processed" | "failed";
   progress: number;
   created_at: string;
   video_available: boolean;
@@ -97,6 +97,28 @@ export type AdCandidate = {
   matched_categories: string[];
   reason: string;
   selected: boolean;
+  eligible?: boolean;
+  rejections?: string[];
+  decision_note?: string | null;
+  brand?: BrandPick | null;
+  creative?: { id: string; duration: number; language: string; url?: string | null; max_seconds: number; language_match: boolean } | null;
+  brand_ranking?: BrandPick[];
+  excluded_brands?: { brand_id: string; name: string; matched_negative: string[] }[];
+};
+
+export type BrandPick = {
+  brand_id: string;
+  name: string;
+  category: string;
+  score: number;
+  matched_preferred: string[];
+  category_match: boolean;
+};
+
+export type AdDecision = {
+  outcome?: "breaks" | "no_break";
+  reason?: string | null;
+  settings?: { min_gap: number; n_breaks: number; blocked: [number, number]; min_safety: number };
 };
 
 export type SubtitleCue = {
@@ -137,11 +159,12 @@ export type Timeline = {
   audio_events: AudioEvent[];
   entities: Entity[];
   ad_candidates: AdCandidate[];
+  ad_decision?: AdDecision;
   subtitles: Record<string, string | number>;
   subtitle_cues: SubtitleCue[];
   cc_cues: SubtitleCue[];
   qc: QCIssue[];
   curves: { intensity: [number, number][]; loudness: [number, number][] };
-  processing: { total_seconds: number; llm_cost_usd: number; models: string[]; cached_stages: number };
+  processing: { total_seconds: number; llm_cost_usd: number; models: string[]; cached_stages: number; partial?: boolean; available_stages?: string[] };
   [key: string]: unknown;
 };

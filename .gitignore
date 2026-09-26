@@ -20,3 +20,5 @@ Thumbs.db
 .idea/
 .vscode/
 .env
+examples/
+.python-version

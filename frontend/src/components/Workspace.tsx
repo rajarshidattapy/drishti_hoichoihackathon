@@ -1,16 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft, BadgeCheck, Captions, Check, ChevronDown, ChevronRight, CircleAlert, Clock3,
   Copy, Download, FileJson2, Film, Gauge, Info, ListFilter, MapPin, MoreHorizontal, Pause,
-  Play, Search, Sparkles, Tag, TriangleAlert, Users, Volume2, X,
+  LoaderCircle, Play, Search, Sparkles, Tag, TriangleAlert, Users, Volume2, X,
 } from "lucide-react";
 import SemanticTimeline from "./SemanticTimeline";
-import { API_URL, api } from "@/lib/api";
+import { API_URL, USE_MOCK, api } from "@/lib/api";
+import { parseVmap, type AdBreak } from "@/lib/vmap";
 import { formatTime, presenceLabel, sentenceCase } from "@/lib/format";
-import type { AdCandidate, Entity, Episode, QCIssue, Scene, SubtitleCue, Timeline, Utterance } from "@/lib/types";
+import type { AdCandidate, AdDecision, Entity, Episode, QCIssue, Scene, SubtitleCue, Timeline, Utterance } from "@/lib/types";
 
 const tabs = ["Scenes", "Transcript", "Entities", "Ads", "Subtitles", "QC", "JSON"] as const;
 type Tab = (typeof tabs)[number];
@@ -26,9 +27,16 @@ export default function Workspace({ episodeId }: { episodeId: string }) {
   const [search, setSearch] = useState("");
   const [exportOpen, setExportOpen] = useState(false);
 
+  const [adBreaks, setAdBreaks] = useState<AdBreak[]>([]);
+  const [activeAd, setActiveAd] = useState<AdBreak | null>(null);
+  const [vmapVersion, setVmapVersion] = useState(0);
+  const playedBreaks = useRef(new Set<string>());
+  const lastTime = useRef(0);
+
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
+    let lastProgress = -1;
     async function load() {
       try {
         const episodeResult = await api.episode(episodeId);
@@ -37,12 +45,20 @@ export default function Workspace({ episodeId }: { episodeId: string }) {
         if (episodeResult.status === "processed") {
           const timelineResult = await api.timeline(episodeId);
           if (!cancelled) setData(timelineResult);
-        } else if (episodeResult.status === "failed") {
+          return;
+        }
+        if (episodeResult.status === "failed") {
           const failed = episodeResult.stages.find((stage) => stage.status === "failed");
           setError(failed ? `${failed.label}: ${failed.error ?? "Processing failed"}` : "Episode processing failed");
-        } else {
-          timer = window.setTimeout(load, 900);
+          return;
         }
+        // Show whatever has finished so far; the rest fills in as stages complete.
+        if (episodeResult.status !== "downloading" && episodeResult.progress !== lastProgress) {
+          lastProgress = episodeResult.progress;
+          const partial = await api.timeline(episodeId, true).catch(() => null);
+          if (!cancelled && partial) setData(partial);
+        }
+        timer = window.setTimeout(load, 1500);
       } catch (reason) {
         if (!cancelled) setError(reason instanceof Error ? reason.message : "Episode request failed");
       }
@@ -57,6 +73,35 @@ export default function Workspace({ episodeId }: { episodeId: string }) {
     return () => window.clearInterval(timer);
   }, [playing, data]);
 
+  useEffect(() => {
+    if (USE_MOCK || episode?.status !== "processed") return;
+    let cancelled = false;
+    fetch(`${API_URL}/episodes/${episodeId}/ads/vmap.xml`, { cache: "no-store" })
+      .then((response) => (response.ok ? response.text() : ""))
+      .then((xml) => { if (!cancelled) setAdBreaks(parseVmap(xml)); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [episodeId, episode?.status, vmapVersion]);
+
+  // Insert a break when playback naturally crosses its offset (not when the user seeks past it).
+  useEffect(() => {
+    const previous = lastTime.current;
+    lastTime.current = currentTime;
+    if (!playing || activeAd) return;
+    const due = adBreaks.find((b) => !playedBreaks.current.has(b.id) && previous < b.time && currentTime >= b.time && currentTime - previous < 2);
+    if (due) {
+      playedBreaks.current.add(due.id);
+      setActiveAd(due);
+      setPlaying(false);
+    }
+  }, [currentTime, playing, activeAd, adBreaks]);
+
+  const videoAvailable = data?.episode.video_available ?? false;
+  const finishAd = useCallback(() => {
+    setActiveAd(null);
+    if (!videoAvailable) setPlaying(true);
+  }, [videoAvailable]);
+
   const currentScene = useMemo(() => data?.scenes.find((scene) => currentTime >= scene.start && currentTime < scene.end) ?? data?.scenes.at(-1), [data, currentTime]);
   const currentCue = useMemo(() => {
     if (!data || captions === "off") return undefined;
@@ -70,6 +115,16 @@ export default function Workspace({ episodeId }: { episodeId: string }) {
 
   if (error) return <ErrorState message={error} />;
   if (!data || !episode || !currentScene) return <LoadingState episode={episode} />;
+
+  // While processing, a tab whose stage hasn't finished shows what it is waiting for.
+  const done = new Set(data.processing.available_stages ?? []);
+  const waitingFor: Partial<Record<Tab, string>> = episode.status === "processed" ? {} : {
+    Scenes: "s13_scene_semantics", Transcript: "s06_stt", Entities: "s11_entities_dialogue", Ads: "s14_ad_scoring",
+    Subtitles: "s15_subtitles", QC: "s17_qc",
+  };
+  const pendingStage = waitingFor[activeTab];
+  const pendingTab = pendingStage && !done.has(pendingStage) && !(activeTab === "Scenes" && data.scenes.length > 1)
+    ? episode.stages.find((stage) => stage.id === pendingStage)?.label ?? pendingStage : null;
 
   const q = search.trim().toLocaleLowerCase();
   const searchResults = q ? [
@@ -102,6 +157,8 @@ export default function Workspace({ episodeId }: { episodeId: string }) {
               <a href={`${API_URL}/episodes/${episodeId}/export/semantic_timeline.json`}><FileJson2 size={15} />Semantic timeline</a>
               <a href={`${API_URL}/episodes/${episodeId}/export/ad_cuepoints.csv`}><Gauge size={15} />Ad cue points</a>
               <a href={`${API_URL}/episodes/${episodeId}/export/qc_report.json`}><CircleAlert size={15} />QC report</a>
+              <a href={`${API_URL}/episodes/${episodeId}/ads/debug`} target="_blank" rel="noreferrer"><FileJson2 size={15} />Ad decisions (debug)</a>
+              <a href={`${API_URL}/episodes/${episodeId}/ads/vmap.xml`} target="_blank" rel="noreferrer"><Film size={15} />VMAP manifest</a>
             </div>}
           </div>
           <button className="icon-button" aria-label="More options"><MoreHorizontal size={18} /></button>
@@ -123,6 +180,8 @@ export default function Workspace({ episodeId }: { episodeId: string }) {
           onTime={seek}
           onPlaying={setPlaying}
           onCaptions={setCaptions}
+          ad={activeAd}
+          onAdEnded={finishAd}
         />
         <SceneInspector scene={currentScene} entities={data.entities.filter((entity) => currentScene.entity_ids.includes(entity.entity_id))} />
       </section>
@@ -134,12 +193,14 @@ export default function Workspace({ episodeId }: { episodeId: string }) {
           {tabs.map((tab) => <button key={tab} className={activeTab === tab ? "active" : ""} onClick={() => setActiveTab(tab)}>{tab}{tab === "QC" && <span>{data.qc.length}</span>}</button>)}
         </nav>
         <div className="tab-body">
+          {pendingTab ? <Pending stage={pendingTab} episode={episode} /> : <>
           {activeTab === "Scenes" && <ScenesTab scenes={data.scenes} currentScene={currentScene} onSeek={seek} />}
           {activeTab === "Transcript" && <TranscriptTab utterances={data.utterances} currentTime={currentTime} onSeek={seek} />}
           {activeTab === "Entities" && <EntitiesTab episodeId={episodeId} entities={data.entities} onSeek={seek} />}
-          {activeTab === "Ads" && <AdsTab episodeId={episodeId} candidates={data.ad_candidates} onSeek={seek} />}
+          {activeTab === "Ads" && <AdsTab key={`${episode.status}-${data.ad_candidates.length}`} episodeId={episodeId} candidates={data.ad_candidates} decision={data.ad_decision} onSeek={seek} onChanged={() => setVmapVersion((v) => v + 1)} />}
           {activeTab === "Subtitles" && <SubtitlesTab episodeId={episodeId} subtitleCues={data.subtitle_cues} ccCues={data.cc_cues} onSeek={seek} />}
           {activeTab === "QC" && <QCTab issues={data.qc} onSeek={seek} />}
+          </>}
           {activeTab === "JSON" && <JsonTab data={data} episodeId={episodeId} />}
         </div>
       </section>
@@ -147,11 +208,25 @@ export default function Workspace({ episodeId }: { episodeId: string }) {
   );
 }
 
-function Player({ episodeId, videoAvailable, currentTime, duration, scene, playing, cue, captions, onTime, onPlaying, onCaptions }: {
+function Player({ episodeId, videoAvailable, currentTime, duration, scene, playing, cue, captions, onTime, onPlaying, onCaptions, ad, onAdEnded }: {
   episodeId: string; videoAvailable: boolean; currentTime: number; duration: number; scene: Scene; playing: boolean; cue?: SubtitleCue;
   captions: "off" | "sub" | "cc"; onTime: (time: number) => void; onPlaying: (playing: boolean) => void; onCaptions: (value: "off" | "sub" | "cc") => void;
+  ad: AdBreak | null; onAdEnded: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const adRef = useRef<HTMLVideoElement>(null);
+  const hadAd = useRef(false);
+  // Pause the episode for the break, play the creative, then resume the episode where it stopped.
+  useEffect(() => {
+    if (ad) {
+      videoRef.current?.pause();
+      const creative = adRef.current;
+      creative?.play().catch(() => { creative.muted = true; creative.play().catch(onAdEnded); });
+    } else if (hadAd.current) {
+      videoRef.current?.play().catch(() => undefined);
+    }
+    hadAd.current = Boolean(ad);
+  }, [ad, onAdEnded]);
   useEffect(() => {
     const video = videoRef.current;
     if (video && Math.abs(video.currentTime - currentTime) > 1) video.currentTime = currentTime;
@@ -171,6 +246,10 @@ function Player({ episodeId, videoAvailable, currentTime, duration, scene, playi
         <div className="preview-label"><Film size={13} />Demo timeline · attach a video for picture</div>
       </div>}
       <div className="player-shade" />
+      {ad && <div className="ad-overlay">
+        <video ref={adRef} src={ad.mediaUrl} playsInline onEnded={onAdEnded} onError={onAdEnded} />
+        <span className="ad-badge">Ad · {ad.title}<small>Episode resumes at {formatTime(ad.time)}</small></span>
+      </div>}
       {cue && <div className="caption-render">{cue.lines.map((line) => <span key={line}>{line}</span>)}</div>}
       <div className="player-controls">
         <button className="play-button" onClick={togglePlayback} aria-label={playing ? "Pause" : "Play"}>{playing ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}</button>
@@ -224,14 +303,17 @@ function EntitiesTab({ episodeId, entities, onSeek }: { episodeId: string; entit
   return <div className="entity-groups">{grouped.map(([category, items]) => <section key={category}><div className="entity-group-title"><span>{sentenceCase(category)}</span><small>{items?.length} entities</small></div>{items?.map((entity) => <div className={`entity-row ${expanded === entity.entity_id ? "expanded" : ""}`} key={entity.entity_id}><button className="entity-summary" onClick={() => setExpanded(expanded === entity.entity_id ? null : entity.entity_id)}><ChevronRight size={15} /><span className="entity-name"><strong>{entity.name_bn ?? entity.name}</strong><small>{entity.name}</small></span><em className={`presence ${entity.presence}`}>{presenceLabel(entity.presence)}</em><span className={`sentiment ${entity.sentiment}`}>{entity.sentiment}</span><span className="confidence">{Math.round(entity.confidence * 100)}%</span></button>{expanded === entity.entity_id && <div className="entity-detail"><div><h4>Evidence</h4>{entity.mentions.map((mention, index) => <button key={index} onClick={() => onSeek(mention.time)}>{formatTime(mention.time)} <span>{mention.source}</span> “{mention.surface}”</button>)}</div><div><h4>Visual verification</h4>{entity.visual_check ? <><p>{entity.visual_check.note}</p><div className="frame-strip">{entity.visual_check.frames_checked.slice(0, 10).map((frame, index) => <span key={frame} className={entity.visual_check?.visible_frames.includes(frame) ? "visible" : ""}><img src={`${API_URL}/episodes/${episodeId}/frames/${frame.split("/").pop()}`} alt="" loading="lazy" onError={(event) => event.currentTarget.remove()} /><i>{index + 1}</i><small>{frame.split("/").pop()?.replace(".jpg", "")}</small></span>)}</div></> : <p>No targeted frame check was required.</p>}</div></div>}</div>)}</section>)}</div>;
 }
 
-function AdsTab({ episodeId, candidates: initial, onSeek }: { episodeId: string; candidates: AdCandidate[]; onSeek: (time: number) => void }) {
+function AdsTab({ episodeId, candidates: initial, decision, onSeek, onChanged }: { episodeId: string; candidates: AdCandidate[]; decision?: AdDecision; onSeek: (time: number) => void; onChanged: () => void }) {
   const [candidates, setCandidates] = useState(initial);
-  const [minGap, setMinGap] = useState(8);
-  const [count, setCount] = useState(2);
+  const [minGap, setMinGap] = useState(Math.round((decision?.settings?.min_gap ?? 480) / 60));
+  const [count, setCount] = useState(decision?.settings?.n_breaks ?? 2);
   const [loading, setLoading] = useState(false);
-  async function recalculate() { setLoading(true); try { setCandidates(await api.ads(episodeId, minGap * 60, count)); } finally { setLoading(false); } }
-  async function toggle(candidate: AdCandidate) { const updated = await api.selectAd(episodeId, candidate.cand_id, !candidate.selected); setCandidates((value) => value.map((item) => item.cand_id === updated.cand_id ? updated : item)); }
-  return <div className="ads-layout"><aside className="ad-settings"><h3>Break settings</h3><label>Breaks wanted <strong>{count}</strong><input type="range" min="1" max="5" value={count} onChange={(event) => setCount(Number(event.target.value))} /></label><label>Minimum gap <strong>{minGap} min</strong><input type="range" min="0" max="12" value={minGap} onChange={(event) => setMinGap(Number(event.target.value))} /></label><div className="blocked-zones"><span>Blocked zones</span><strong>Opening 00:00</strong><strong>Closing 00:00</strong></div><button className="primary-button" onClick={recalculate}>{loading ? "Calculating…" : "Recalculate"}</button><p>Selection uses cached candidates and updates instantly. No media is reprocessed.</p></aside><div className="candidate-list">{[...candidates].sort((a, b) => b.score.total - a.score.total).map((candidate, index) => <article className={`candidate-card ${candidate.selected ? "selected" : ""}`} key={candidate.cand_id}><div className="candidate-rank">{String(index + 1).padStart(2, "0")}</div><div className="candidate-content"><div className="candidate-heading"><button onClick={() => onSeek(candidate.time)}><strong>{formatTime(candidate.time)}</strong><span>{sentenceCase(candidate.kind)}</span></button><em className={`disruption ${candidate.disruption}`}>{candidate.disruption} disruption</em><button className={`selection-toggle ${candidate.selected ? "active" : ""}`} onClick={() => toggle(candidate)}><i />{candidate.selected ? "Selected" : "Select"}</button></div><p>{candidate.reason}</p><ScoreBar candidate={candidate} /><div className="score-legend"><span>Pause {Math.round(candidate.score.pause * 100)}</span><span>Scene end {Math.round(candidate.score.scene_end * 100)}</span><span>Low intensity {Math.round(candidate.score.low_intensity * 100)}</span><span>Context {Math.round(candidate.score.context_match * 100)}</span></div></div><div className="total-score"><strong>{Math.round(candidate.score.total * 100)}</strong><span>score</span></div></article>)}</div></div>;
+  const [message, setMessage] = useState("");
+  const blocked = decision?.settings?.blocked ?? [0, 0];
+  async function recalculate() { setLoading(true); setMessage(""); try { setCandidates(await api.ads(episodeId, minGap * 60, count)); onChanged(); } catch (reason) { setMessage(reason instanceof Error ? reason.message : "Recalculation failed"); } finally { setLoading(false); } }
+  async function toggle(candidate: AdCandidate) { setMessage(""); try { const updated = await api.selectAd(episodeId, candidate.cand_id, !candidate.selected); setCandidates((value) => value.map((item) => item.cand_id === updated.cand_id ? updated : item)); onChanged(); } catch (reason) { setMessage(reason instanceof Error ? reason.message : "Could not change the selection"); } }
+  const noBreak = !candidates.some((candidate) => candidate.selected);
+  return <div className="ads-layout"><aside className="ad-settings"><h3>Break settings</h3><label>Breaks wanted <strong>{count}</strong><input type="range" min="1" max="5" value={count} onChange={(event) => setCount(Number(event.target.value))} /></label><label>Minimum gap <strong>{minGap} min</strong><input type="range" min="0" max="12" value={minGap} onChange={(event) => setMinGap(Number(event.target.value))} /></label><div className="blocked-zones"><span>Blocked zones</span><strong>Opening {formatTime(blocked[0])}</strong><strong>Closing {formatTime(blocked[1])}</strong></div><button className="primary-button" onClick={recalculate}>{loading ? "Calculating…" : "Recalculate"}</button><p>Hard constraints → safety → pacing → brand safety → brand fit. Uses cached candidates; no media is reprocessed.</p>{message && <p className="ad-message">{message}</p>}</aside><div className="candidate-list">{noBreak && <div className="no-break"><Info size={15} /><span><strong>No break</strong>{decision?.reason ?? "No position satisfies the constraints."}</span></div>}{[...candidates].sort((a, b) => Number(b.eligible ?? true) - Number(a.eligible ?? true) || b.score.total - a.score.total).map((candidate, index) => <article className={`candidate-card ${candidate.selected ? "selected" : ""} ${candidate.eligible === false ? "ineligible" : ""}`} key={candidate.cand_id}><div className="candidate-rank">{String(index + 1).padStart(2, "0")}</div><div className="candidate-content"><div className="candidate-heading"><button onClick={() => onSeek(candidate.time)}><strong>{formatTime(candidate.time)}</strong><span>{sentenceCase(candidate.kind)}</span></button><em className={`disruption ${candidate.disruption}`}>{candidate.disruption} disruption</em><button className={`selection-toggle ${candidate.selected ? "active" : ""}`} onClick={() => toggle(candidate)} disabled={candidate.eligible === false}><i />{candidate.selected ? "Selected" : candidate.eligible === false ? "Blocked" : "Select"}</button></div><p>{candidate.reason}</p>{candidate.brand && <div className="brand-pick"><Tag size={13} /><strong>{candidate.brand.name}</strong><span>{sentenceCase(candidate.brand.category)}</span>{candidate.brand.matched_preferred.length > 0 && <small>{candidate.brand.matched_preferred.join(", ")}</small>}{candidate.creative && <small>{candidate.creative.duration} s · {candidate.creative.language || "any language"}{candidate.creative.language_match ? "" : " (no episode-language cut)"}</small>}</div>}{(candidate.rejections?.length ?? 0) > 0 && <div className="rejections">{candidate.rejections?.map((rejection) => <em key={rejection}>{sentenceCase(rejection)}</em>)}</div>}{(candidate.excluded_brands?.length ?? 0) > 0 && <div className="rejections excluded">{candidate.excluded_brands?.map((brand) => <em key={brand.brand_id}>{brand.name}: {brand.matched_negative.join(", ")}</em>)}</div>}<ScoreBar candidate={candidate} /><div className="score-legend"><span>Pause {Math.round(candidate.score.pause * 100)}</span><span>Scene end {Math.round(candidate.score.scene_end * 100)}</span><span>Low intensity {Math.round(candidate.score.low_intensity * 100)}</span><span>Context {Math.round(candidate.score.context_match * 100)}</span></div></div><div className="total-score"><strong>{Math.round(candidate.score.total * 100)}</strong><span>safety</span></div></article>)}</div></div>;
 }
 
 function ScoreBar({ candidate }: { candidate: AdCandidate }) { const values = [candidate.score.pause, candidate.score.scene_end, candidate.score.low_intensity, candidate.score.context_match]; const colors = ["#81A7FF", "#62E6A7", "#B895E3", "#F3B64B"]; const total = values.reduce((sum, value) => sum + value, 0); return <div className="score-bar">{values.map((value, index) => <i key={colors[index]} style={{ width: `${total ? value / total * 100 : 0}%`, background: colors[index] }} />)}</div>; }
@@ -252,6 +334,8 @@ function JsonTab({ data, episodeId }: { data: Timeline; episodeId: string }) {
   return <div className="json-view"><div className="json-tools"><div><FileJson2 size={17} /><strong>semantic_timeline.json</strong><span>{(new Blob([json]).size / 1024).toFixed(1)} KB</span></div><div><button className="quiet-button" onClick={copy}>{copied ? <Check size={14} /> : <Copy size={14} />}{copied ? "Copied" : "Copy"}</button><a className="quiet-button" href={`${API_URL}/episodes/${episodeId}/export/semantic_timeline.json`}><Download size={14} />Download</a></div></div><pre>{json}</pre></div>;
 }
 
-function ProcessingBar({ episode }: { episode: Episode }) { return <div className="processing-bar"><span className="signal-dot" /><strong>Processing episode</strong><div><i style={{ width: `${episode.progress}%` }} /></div><span>{episode.progress}%</span><small>{episode.stages.find((stage) => stage.status === "running")?.label ?? "Queued"}</small></div>; }
-function LoadingState({ episode }: { episode: Episode | null }) { const active = episode?.stages.find((stage) => stage.status === "running"); return <main className="state-screen"><span className="brand-glyph"><i /><i /><i /></span><h1>Building the semantic timeline</h1><p>{active ? `${active.label} is running. ${episode?.progress ?? 0}% complete.` : "Loading scenes, entities, captions, and ad candidates…"}</p>{episode && <div className="loading-progress"><i style={{ width: `${episode.progress}%` }} /></div>}</main>; }
+function runningLabel(episode: Episode) { return episode.stages.filter((stage) => stage.status === "running").map((stage) => stage.label).join(" · "); }
+function ProcessingBar({ episode }: { episode: Episode }) { const done = episode.stages.filter((stage) => stage.status === "done").length; return <div className="processing-bar"><span className="signal-dot" /><strong>{episode.status === "downloading" ? "Downloading video" : "Processing episode"}</strong><div><i style={{ width: `${episode.progress}%` }} /></div><span>{episode.progress}%</span><small>{runningLabel(episode) || "Queued"} · {done}/{episode.stages.length} stages · results appear as they finish</small></div>; }
+function LoadingState({ episode }: { episode: Episode | null }) { const active = episode ? runningLabel(episode) : ""; const downloading = episode?.status === "downloading"; return <main className="state-screen"><span className="brand-glyph"><i /><i /><i /></span><h1>{downloading ? "Fetching the video" : "Building the semantic timeline"}</h1><p>{downloading ? `Downloading from the link… ${episode?.progress ?? 0}%. Processing starts automatically.` : active ? `${active} is running. The workspace opens as soon as the video is ingested.` : "Loading scenes, entities, captions, and ad candidates…"}</p>{episode && <div className="loading-progress"><i style={{ width: `${episode.progress}%` }} /></div>}</main>; }
+function Pending({ stage, episode }: { stage: string; episode: Episode }) { return <div className="pending-tab"><LoaderCircle className="spin" size={18} /><strong>Waiting for {stage}</strong><span>{runningLabel(episode) ? `Now running: ${runningLabel(episode)}` : "Queued"} · {episode.progress}% complete</span></div>; }
 function ErrorState({ message }: { message: string }) { return <main className="state-screen error"><CircleAlert size={30} /><h1>The episode could not be opened</h1><p>{message}</p><Link href="/" className="primary-button"><ArrowLeft size={16} />Back to library</Link></main>; }

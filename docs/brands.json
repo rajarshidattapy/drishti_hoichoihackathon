@@ -1,0 +1,372 @@
+[
+  {
+    "brand_id": "brand_a",
+    "display_name": "Brand A",
+    "category": "food/spices/cooking",
+    "target_contexts": [
+      "cooking",
+      "kitchen",
+      "eating",
+      "family meal",
+      "recipe",
+      "food preparation",
+      "spices",
+      "seasoning",
+      "frying",
+      "boiling",
+      "homemade food",
+      "lunch",
+      "dinner",
+      "festival food"
+    ],
+    "negative_contexts": [
+      "funeral",
+      "hospital",
+      "violence",
+      "illness",
+      "bathroom",
+      "accident",
+      "grief"
+    ],
+    "creatives": [
+      {
+        "id": "a_15s_bn",
+        "duration_sec": 15,
+        "language": "bn",
+        "url": "ads/brand_a/a_15s_bn.mp4"
+      },
+      {
+        "id": "a_20s_bn",
+        "duration_sec": 20,
+        "language": "bn",
+        "url": "ads/brand_a/a_20s_bn.mp4"
+      },
+      {
+        "id": "a_30s_bn",
+        "duration_sec": 30,
+        "language": "bn",
+        "url": "ads/brand_a/a_30s_bn.mp4"
+      }
+    ]
+  },
+  {
+    "brand_id": "brand_b",
+    "display_name": "Brand B",
+    "category": "personal care/skincare",
+    "target_contexts": [
+      "face wash",
+      "skincare",
+      "bathroom",
+      "morning routine",
+      "hair care",
+      "sweating",
+      "heat",
+      "shower",
+      "washing face",
+      "moisturizer",
+      "cream",
+      "personal hygiene",
+      "self care",
+      "getting ready"
+    ],
+    "negative_contexts": [
+      "funeral",
+      "violence",
+      "eating",
+      "accident",
+      "hospital",
+      "grief"
+    ],
+    "creatives": [
+      {
+        "id": "b_15s_bn",
+        "duration_sec": 15,
+        "language": "bn",
+        "url": "ads/brand_b/b_15s_bn.mp4"
+      },
+      {
+        "id": "b_20s_bn",
+        "duration_sec": 20,
+        "language": "bn",
+        "url": "ads/brand_b/b_20s_bn.mp4"
+      },
+      {
+        "id": "b_30s_bn",
+        "duration_sec": 30,
+        "language": "bn",
+        "url": "ads/brand_b/b_30s_bn.mp4"
+      }
+    ]
+  },
+  {
+    "brand_id": "brand_c",
+    "display_name": "Brand C",
+    "category": "beauty/cosmetics",
+    "target_contexts": [
+      "make-up",
+      "getting ready",
+      "wedding",
+      "party",
+      "mirror",
+      "fashion",
+      "salon",
+      "lipstick",
+      "foundation",
+      "eyeliner",
+      "beauty",
+      "dressing",
+      "celebration",
+      "special occasion"
+    ],
+    "negative_contexts": [
+      "funeral",
+      "violence",
+      "illness",
+      "accident",
+      "hospital",
+      "grief"
+    ],
+    "creatives": [
+      {
+        "id": "c_15s_bn",
+        "duration_sec": 15,
+        "language": "bn",
+        "url": "ads/brand_c/c_15s_bn.mp4"
+      },
+      {
+        "id": "c_20s_bn",
+        "duration_sec": 20,
+        "language": "bn",
+        "url": "ads/brand_c/c_20s_bn.mp4"
+      },
+      {
+        "id": "c_30s_bn",
+        "duration_sec": 30,
+        "language": "bn",
+        "url": "ads/brand_c/c_30s_bn.mp4"
+      }
+    ]
+  },
+  {
+    "brand_id": "brand_d",
+    "display_name": "Brand D",
+    "category": "telecom/connectivity",
+    "target_contexts": [
+      "phone",
+      "mobile",
+      "calling",
+      "video call",
+      "messaging",
+      "internet",
+      "wifi",
+      "streaming",
+      "social media",
+      "working remotely",
+      "online meeting",
+      "travel",
+      "communication",
+      "family conversation"
+    ],
+    "negative_contexts": [
+      "funeral",
+      "hospital",
+      "medical emergency",
+      "violence"
+    ],
+    "creatives": [
+      {
+        "id": "d_20s_bn",
+        "duration_sec": 20,
+        "language": "bn",
+        "url": "ads/brand_d/d_20s_bn.mp4"
+      },
+      {
+        "id": "d_30s_bn",
+        "duration_sec": 30,
+        "language": "bn",
+        "url": "ads/brand_d/d_30s_bn.mp4"
+      }
+    ]
+  },
+  {
+    "brand_id": "brand_e",
+    "display_name": "Brand E",
+    "category": "automotive/mobility",
+    "target_contexts": [
+      "car",
+      "automobile",
+      "driving",
+      "road trip",
+      "commuting",
+      "traffic",
+      "parking",
+      "highway",
+      "motorcycle",
+      "vehicle",
+      "road",
+      "journey",
+      "travel by car",
+      "family trip"
+    ],
+    "negative_contexts": [
+      "funeral",
+      "hospital",
+      "violence",
+      "accident",
+      "injury",
+      "grief"
+    ],
+    "creatives": [
+      {
+        "id": "e_20s_bn",
+        "duration_sec": 20,
+        "language": "bn",
+        "url": "ads/brand_e/e_20s_bn.mp4"
+      },
+      {
+        "id": "e_30s_bn",
+        "duration_sec": 30,
+        "language": "bn",
+        "url": "ads/brand_e/e_30s_bn.mp4"
+      }
+    ]
+  },
+  {
+    "brand_id": "brand_f",
+    "display_name": "Brand F",
+    "category": "fintech/digital payments",
+    "target_contexts": [
+      "shopping",
+      "payment",
+      "mobile payment",
+      "digital wallet",
+      "banking",
+      "money transfer",
+      "bill payment",
+      "online shopping",
+      "checkout",
+      "merchant",
+      "salary",
+      "personal finance",
+      "transaction"
+    ],
+    "negative_contexts": [
+      "funeral",
+      "hospital",
+      "violence",
+      "financial distress",
+      "grief"
+    ],
+    "creatives": [
+      {
+        "id": "f_15s_bn",
+        "duration_sec": 15,
+        "language": "bn",
+        "url": "ads/brand_f/f_15s_bn.mp4"
+      },
+      {
+        "id": "f_20s_bn",
+        "duration_sec": 20,
+        "language": "bn",
+        "url": "ads/brand_f/f_20s_bn.mp4"
+      },
+      {
+        "id": "f_30s_bn",
+        "duration_sec": 30,
+        "language": "bn",
+        "url": "ads/brand_f/f_30s_bn.mp4"
+      }
+    ]
+  },
+  {
+    "brand_id": "brand_g",
+    "display_name": "Brand G",
+    "category": "travel/hospitality",
+    "target_contexts": [
+      "travel",
+      "vacation",
+      "holiday",
+      "hotel",
+      "resort",
+      "tourism",
+      "train journey",
+      "airport",
+      "beach",
+      "mountains",
+      "sightseeing",
+      "road trip",
+      "weekend trip",
+      "family vacation"
+    ],
+    "negative_contexts": [
+      "funeral",
+      "hospital",
+      "violence",
+      "accident",
+      "illness",
+      "grief"
+    ],
+    "creatives": [
+      {
+        "id": "g_20s_bn",
+        "duration_sec": 20,
+        "language": "bn",
+        "url": "ads/brand_g/g_20s_bn.mp4"
+      },
+      {
+        "id": "g_30s_bn",
+        "duration_sec": 30,
+        "language": "bn",
+        "url": "ads/brand_g/g_30s_bn.mp4"
+      }
+    ]
+  },
+  {
+    "brand_id": "brand_h",
+    "display_name": "Brand H",
+    "category": "e-commerce/online shopping",
+    "target_contexts": [
+      "online shopping",
+      "shopping",
+      "delivery",
+      "package",
+      "parcel",
+      "e-commerce",
+      "mobile shopping",
+      "product browsing",
+      "checkout",
+      "fashion shopping",
+      "home shopping",
+      "electronics shopping",
+      "gift",
+      "purchase"
+    ],
+    "negative_contexts": [
+      "funeral",
+      "hospital",
+      "violence",
+      "accident",
+      "grief"
+    ],
+    "creatives": [
+      {
+        "id": "h_15s_bn",
+        "duration_sec": 15,
+        "language": "bn",
+        "url": "ads/brand_h/h_15s_bn.mp4"
+      },
+      {
+        "id": "h_20s_bn",
+        "duration_sec": 20,
+        "language": "bn",
+        "url": "ads/brand_h/h_20s_bn.mp4"
+      },
+      {
+        "id": "h_30s_bn",
+        "duration_sec": 30,
+        "language": "bn",
+        "url": "ads/brand_h/h_30s_bn.mp4"
+      }
+    ]
+  }
+]

@@ -29,13 +29,26 @@ The local bounded worker is intentionally behind `PipelineCoordinator`; it can b
 | s11 entities | grounded LLM extraction per scene (every mention must cite a `utt_id`); keyword baseline without a key | |
 | s12 verification | baseline-tag pre-check, 1 fps window sampling, timestamped frame strips, presence verdicts; shown-only entities | |
 | s13 semantics | LLM title/summary/mood + fused intensity (0.55 LLM, 0.25 audio p10–p90, 0.20 dialogue density), 5 s smoothed curve | |
-| s14 ads | documented score formula, snap to silence, blocked zones, cliffhanger protection, template reasons | |
+| s14 ads | decision pipeline in `pipeline/ads.py` (see below) | |
 | s15 subtitles | grapheme-aware formatter, CPS extension into silence, `- ` speaker-change cues | |
 | s16 captions | sound cues merged / shifted ±1.5 s / dropped, `[… সঙ্গীত]` music cues | |
 | s17 QC | all nine documented rules + pass/fail summary | |
 | s18 assemble | validated `SemanticTimeline`, cue points JSON/CSV, per-stage timing and LLM cost | |
 
 All thresholds live in `app.settings.Thresholds` and are recorded in `processing.thresholds`.
+
+## Ad decisions
+
+`pipeline/ads.py` applies a fixed order: hard constraints (speech at the cut, cliffhanger build-up, blocked zones, short or high-intensity pauses) → eliminate invalid candidates → boundary safety score (pause, scene end, low intensity) → pacing (`n_breaks`, `min_gap`, safety floor) → hard negative-context brand filter → contextual brand ranking. When nothing survives, the outcome is **no break**.
+
+Brands come only from `docs/brands.json` (`category`, `target_contexts`, `negative_contexts`, `creatives`), matched against each break's context: scene topics, mood, location and activity, nearby dialogue, entities and their ad categories, plus the next scene for safety. A new brand in that file is used on the next `GET /episodes/{id}/ads`, with no code change or reprocessing. Each selected break gets one of the brand's `creatives`: episode-language (`bn`) cuts first, then the longest the break's safety allows (≥ 0.75 → 30 s, ≥ 0.60 → 20 s, otherwise 15 s), or the shortest available if none fits. Creative URLs are resolved relative to `docs/`. When a file is missing, a slate of the creative's duration is generated.
+
+- `GET /episodes/{id}/ads/vmap.xml`: VMAP 1.0 with inline VAST for the selected breaks. The workspace player inserts the ad and resumes the episode.
+- `GET /episodes/{id}/ads/debug`: full decision trace (settings, rejections, safety scores, brand rankings and exclusions).
+
+## Links and progressive results
+
+`POST /episodes` with `{"url": "<YouTube or Google Drive link>"}` adds an `s00_download` stage (yt-dlp) in front of the same pipeline. `GET /episodes/{id}/timeline?partial=true` assembles whatever stages have finished, so the episode page opens as soon as ingest is done and fills in progressively.
 
 ## Providers
 

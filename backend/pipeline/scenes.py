@@ -4,6 +4,8 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Sequence
 
+import regex
+
 from app.settings import Thresholds
 
 
@@ -62,9 +64,34 @@ def location_changed(left: dict, right: dict) -> float:
     return float(a != b)
 
 
+def activity_changed(left: dict, right: dict) -> float:
+    a, b = (left.get("activity") or "unknown").casefold(), (right.get("activity") or "unknown").casefold()
+    if "unknown" in (a, b):
+        return 0.0
+    return float(a != b)
+
+
 def speaker_set_change(utterances: list[dict], cut: float, window: float) -> float:
-    before = {u["speaker"] for u in utterances if cut - window <= u["start"] < cut}
-    after = {u["speaker"] for u in utterances if cut <= u["start"] < cut + window}
+    """Character change: named characters when known, diarization clusters otherwise."""
+    def who(u: dict) -> str:
+        return u.get("speaker_name") or u["speaker"]
+    before = {who(u) for u in utterances if cut - window <= u["start"] < cut}
+    after = {who(u) for u in utterances if cut <= u["start"] < cut + window}
+    if not before or not after:
+        return 0.0
+    return 1 - len(before & after) / len(before | after)
+
+
+def _stems(texts: list[str]) -> set[str]:
+    # Four-character stems absorb most Bengali inflection (ফোনটা/ফোনের) without a stemmer.
+    words = regex.findall(r"\w+", " ".join(texts).casefold())
+    return {w[:4] for w in words if len(w) >= 3}
+
+
+def dialogue_shift(utterances: list[dict], cut: float, window: float) -> float:
+    """Topic change in what is being said across the cut (1 - Jaccard of word stems)."""
+    before = _stems([u.get("text", "") for u in utterances if cut - window <= u["start"] < cut])
+    after = _stems([u.get("text", "") for u in utterances if cut <= u["start"] < cut + window])
     if not before or not after:
         return 0.0
     return 1 - len(before & after) / len(before | after)
@@ -77,27 +104,46 @@ def silence_at_cut(silences: list[dict], cut: float, min_seconds: float, toleran
     ))
 
 
+def cut_points(shots: list[dict], silences: list[dict], thresholds: Thresholds) -> list[tuple[float, int, bool]]:
+    """(time, index of the shot before the cut, is_shot_cut). Shot cuts plus long pauses away from any cut."""
+    points = [(shots[i]["end"], i, True) for i in range(len(shots) - 1)]
+    shot_times = [p[0] for p in points]
+    for silence in silences:
+        if silence["duration"] < thresholds.scene_pause_cut_seconds:
+            continue
+        middle = (silence["start"] + silence["end"]) / 2
+        if any(abs(middle - t) < 3 for t in shot_times):
+            continue
+        index = next((i for i, shot in enumerate(shots) if shot["start"] <= middle < shot["end"]), None)
+        if index is not None and shots[index]["start"] + 1 < middle < shots[index]["end"] - 1:
+            points.append((round(middle, 3), index, False))
+    return sorted(points)
+
+
 def score_boundaries(
     shots: list[dict], tags: dict[str, dict], utterances: list[dict], silences: list[dict],
     thresholds: Thresholds, embeddings: dict[str, list[float]] | None = None,
 ) -> list[dict]:
-    """Score every cut between consecutive shots (step A of s10)."""
+    """Score every candidate cut (step A of s10) on picture, place, activity, characters, dialogue and silence."""
+    t = thresholds
     output = []
-    for index in range(len(shots) - 1):
-        cut = shots[index]["end"]
+    for cut, index, shot_cut in cut_points(shots, silences, t):
+        left = tags.get(shots[index]["shot_id"], UNKNOWN_VISUAL)
+        right = tags.get(shots[index + 1]["shot_id"], UNKNOWN_VISUAL) if shot_cut else left
         components = {
-            "visual": visual_change(shots, index, embeddings),
-            "location": location_changed(tags.get(shots[index]["shot_id"], UNKNOWN_VISUAL), tags.get(shots[index + 1]["shot_id"], UNKNOWN_VISUAL)),
-            "speakers": speaker_set_change(utterances, cut, thresholds.scene_speaker_window_seconds),
-            "silence": silence_at_cut(silences, cut, thresholds.scene_silence_at_cut_seconds),
+            "visual": visual_change(shots, index, embeddings) if shot_cut else 0.0,
+            "location": location_changed(left, right),
+            "activity": activity_changed(left, right),
+            "speakers": speaker_set_change(utterances, cut, t.scene_speaker_window_seconds),
+            "dialogue": dialogue_shift(utterances, cut, t.scene_speaker_window_seconds),
+            "silence": silence_at_cut(silences, cut, t.scene_silence_at_cut_seconds),
         }
         score = (
-            thresholds.scene_weight_visual * components["visual"]
-            + thresholds.scene_weight_location * components["location"]
-            + thresholds.scene_weight_speakers * components["speakers"]
-            + thresholds.scene_weight_silence * components["silence"]
+            t.scene_weight_visual * components["visual"] + t.scene_weight_location * components["location"]
+            + t.scene_weight_activity * components["activity"] + t.scene_weight_speakers * components["speakers"]
+            + t.scene_weight_dialogue * components["dialogue"] + t.scene_weight_silence * components["silence"]
         )
-        output.append({"after_shot": index, "time": cut, "score": round(score, 4), "components": {k: round(v, 4) for k, v in components.items()}})
+        output.append({"after_shot": index, "time": cut, "shot_cut": shot_cut, "score": round(score, 4), "components": {k: round(v, 4) for k, v in components.items()}})
     return output
 
 
@@ -201,10 +247,12 @@ def scene_digest(scene: dict, shots: list[dict], tags: dict[str, dict], utteranc
     lines = [u for u in utterances if scene["start"] <= u["start"] < scene["end"]]
     head = lines[:3]
     tail = lines[-3:] if len(lines) > 3 else []
-    dialogue = "\n".join(f"  {u['speaker']}: {u['text']}" for u in head)
+    def line(u: dict) -> str:
+        return f"  {u.get('speaker_name') or u['speaker']}: {u['text']}"
+    dialogue = "\n".join(line(u) for u in head)
     if tail:
-        dialogue += "\n  …\n" + "\n".join(f"  {u['speaker']}: {u['text']}" for u in tail)
+        dialogue += "\n  …\n" + "\n".join(line(u) for u in tail)
     return (
-        f"{scene['start']:.1f}-{scene['end']:.1f}s, {len(scene_shots)} shots, location={visual['location']}, "
+        f"{scene['start']:.1f}-{scene['end']:.1f}s, {len(scene_shots)} shots, location={visual['location']}, activity={visual['activity']}, "
         f"objects={', '.join(visual['objects'][:6]) or 'none'}\n{dialogue or '  (no dialogue)'}"
     )

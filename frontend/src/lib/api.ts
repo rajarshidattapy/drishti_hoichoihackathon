@@ -19,9 +19,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 const httpApi = {
   episodes: () => request<Episode[]>("/episodes"),
   episode: (id: string) => request<Episode>(`/episodes/${id}`),
-  timeline: (id: string) => request<Timeline>(`/episodes/${id}/timeline`),
+  /** partial: whatever stages have finished so far, while the episode is still processing. */
+  timeline: (id: string, partial = false) => request<Timeline>(`/episodes/${id}/timeline${partial ? "?partial=true" : ""}`),
   ads: (id: string, minGap: number, count: number) =>
-    request<AdCandidate[]>(`/episodes/${id}/ads?min_gap=${minGap}&n_breaks=${count}&blocked=0,0`),
+    request<AdCandidate[]>(`/episodes/${id}/ads?min_gap=${minGap}&n_breaks=${count}`),
   selectAd: (id: string, candidateId: string, selected: boolean) =>
     request<AdCandidate>(`/episodes/${id}/ads/${candidateId}`, {
       method: "PATCH",
@@ -29,6 +30,11 @@ const httpApi = {
       body: JSON.stringify({ selected }),
     }),
   upload: (form: FormData) => request<Episode>("/episodes", { method: "POST", body: form }),
+  ingestUrl: (url: string) => request<Episode>("/episodes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  }),
 };
 
 export const api: typeof httpApi = USE_MOCK ? mockApi : httpApi;

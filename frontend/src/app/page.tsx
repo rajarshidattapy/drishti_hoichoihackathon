@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowUpRight, Check, Clapperboard, Clock3, FileVideo2, LoaderCircle, Upload, X } from "lucide-react";
+import { ArrowUpRight, Check, Clapperboard, Clock3, FileVideo2, Link2, LoaderCircle, Upload, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { formatTime } from "@/lib/format";
 import type { Episode } from "@/lib/types";
@@ -15,6 +15,8 @@ export default function LibraryPage() {
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
+  const [url, setUrl] = useState("");
+  const [fetching, setFetching] = useState(false);
 
   useEffect(() => {
     api.episodes().then(setEpisodes).catch((reason: Error) => setError(reason.message)).finally(() => setLoading(false));
@@ -32,6 +34,20 @@ export default function LibraryPage() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Upload failed");
       setUploading(false);
+    }
+  }
+
+  async function handleUrl(event: React.FormEvent) {
+    event.preventDefault();
+    if (!url.trim()) return;
+    setFetching(true);
+    setError("");
+    try {
+      const episode = await api.ingestUrl(url.trim());
+      router.push(`/episode/${episode.id}`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not add the link");
+      setFetching(false);
     }
   }
 
@@ -70,7 +86,16 @@ export default function LibraryPage() {
         <input ref={inputRef} hidden type="file" accept="video/mp4,video/x-matroska,video/quicktime,video/webm" onChange={(event) => handleFile(event.target.files?.[0])} />
       </section>
 
-      {error && <div className="error-banner"><X size={16} />{error}. Start the FastAPI server on port 8000 and try again.</div>}
+      <form className="url-strip" onSubmit={handleUrl}>
+        <Link2 size={17} />
+        <input type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="…or paste a YouTube or Google Drive video link" aria-label="Video link" disabled={fetching} />
+        <button className="quiet-button" type="submit" disabled={fetching || !url.trim()}>
+          {fetching ? <LoaderCircle className="spin" size={15} /> : <ArrowUpRight size={15} />}
+          {fetching ? "Adding" : "Fetch video"}
+        </button>
+      </form>
+
+      {error && <div className="error-banner"><X size={16} />{error}{error === "Failed to fetch" ? ". Start the FastAPI server on port 8000 and try again." : ""}</div>}
 
       <section className="catalog-section">
         <div className="section-heading">
@@ -84,12 +109,12 @@ export default function LibraryPage() {
             <button className="episode-row" key={episode.id} onClick={() => router.push(`/episode/${episode.id}`)}>
               <span className="episode-index">{String(index + 1).padStart(2, "0")}</span>
               <span className="episode-main">
-                <span className="episode-thumb"><Clapperboard size={22} /><i>{episode.status === "processed" ? "Ready" : `${episode.progress}%`}</i></span>
+                <span className="episode-thumb"><Clapperboard size={22} /><i>{episode.status === "processed" ? "Ready" : episode.status === "downloading" ? `↓ ${episode.progress}%` : `${episode.progress}%`}</i></span>
                 <span><strong>{episode.title}</strong><small>{episode.id}</small></span>
               </span>
               <span className="row-data"><Clock3 size={14} />{episode.duration ? formatTime(episode.duration, true) : "Analyzing"}</span>
               <span className={`status-pill ${episode.status}`}>
-                {episode.status === "processed" ? <Check size={13} /> : <LoaderCircle className={episode.status === "processing" ? "spin" : ""} size={13} />}
+                {episode.status === "processed" ? <Check size={13} /> : <LoaderCircle className={episode.status === "processing" || episode.status === "downloading" ? "spin" : ""} size={13} />}
                 {episode.status}
               </span>
               <span className="row-data date">{new Intl.DateTimeFormat("en-IN", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(episode.created_at))}</span>

@@ -15,6 +15,7 @@ dependencies = [
   "regex>=2024.11.6",
   "srt>=3.5,<4",
   "numpy>=1.26",
+  "yt-dlp>=2025.1.1",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +28,9 @@ gpu = ["scenedetect[opencv]>=0.6.4", "silero-vad>=5.1", "panns-inference>=0.1.1"
 [build-system]
 requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
+
+[tool.vercel]
+entrypoint = "app.main:app"
 
 [tool.setuptools.packages.find]
 where = ["."]

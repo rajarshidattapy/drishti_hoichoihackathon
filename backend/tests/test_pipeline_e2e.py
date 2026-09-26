@@ -180,3 +180,43 @@ def test_artifacts_synced_from_another_machine_are_reused(tmp_path, clip, monkey
     cached = {event["stage"] for event in last if event["event"] == "stage_cached"}
     assert {"s02_shots", "s03_keyframes", "s04_audio_prep", "s08_audio_events"} <= cached
     local_db.close()
+
+
+def test_url_ingestion_uses_the_same_pipeline_and_streams_partial_results(tmp_path, clip, monkeypatch):
+    import shutil
+
+    import pipeline.runner as runner_module
+
+    def fake_download(url, destination, *, max_bytes, on_progress):
+        on_progress(50)
+        target = destination / "source.mp4"
+        shutil.copy2(clip, target)
+        on_progress(100)
+        return target, "Linked episode"
+
+    monkeypatch.setattr(runner_module, "download", fake_download)
+    monkeypatch.setattr(SarvamClient, "transcribe", fake_transcribe)
+    app = create_app(Settings(data_dir=tmp_path / "data", seed_demo=False, sarvam_api_key="test", openai_api_key=None))
+    with TestClient(app) as client:
+        created = client.post("/episodes", json={"url": "https://youtu.be/abc123"})
+        assert created.status_code == 201
+        assert created.json()["stages"][0]["id"] == "s00_download"
+        episode_id = created.json()["id"]
+        partial_seen = False
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            state = client.get(f"/episodes/{episode_id}").json()
+            if state["status"] == "processing":
+                partial = client.get(f"/episodes/{episode_id}/timeline", params={"partial": True})
+                # Once s18 has written the final timeline, partial=true simply returns it.
+                if partial.status_code == 200 and partial.json()["processing"].get("partial"):
+                    partial_seen = True
+            if state["status"] in {"processed", "failed"}:
+                break
+            time.sleep(.1)
+        assert state["status"] == "processed", [s for s in state["stages"] if s["status"] == "failed"]
+        assert state["title"] == "Linked episode"
+        assert all(s["status"] == "done" for s in state["stages"])
+        assert partial_seen
+        timeline = client.get(f"/episodes/{episode_id}/timeline").json()
+        assert timeline["utterances"] and "ad_decision" in timeline

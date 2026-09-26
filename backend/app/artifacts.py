@@ -27,6 +27,9 @@ class ArtifactStore:
     def stage_path(self, episode_id: str, stage_id: str) -> Path:
         return self.episode_dir(episode_id) / "stages" / f"{stage_id}.json"
 
+    def source_url_path(self, episode_id: str) -> Path:
+        return self.episode_dir(episode_id) / "source_url.txt"
+
     def output_path(self, episode_id: str, name: str) -> Path:
         return self.episode_dir(episode_id) / "outputs" / name
 

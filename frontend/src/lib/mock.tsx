@@ -280,4 +280,9 @@ export const mockApi = {
     store.set(id, record);
     return delay(record.episode, 600);
   },
+  ingestUrl: async (url: string) => {
+    const form = new FormData();
+    form.append("file", new File([], url.split("/").pop() || "Linked video"));
+    return mockApi.upload(form);
+  },
 };

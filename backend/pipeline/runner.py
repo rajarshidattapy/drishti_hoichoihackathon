@@ -14,6 +14,7 @@ from app.artifacts import ArtifactStore
 from app.db import Database
 from app.settings import Settings
 from pipeline.errors import PipelineError
+from pipeline.fetch import download
 from pipeline.stages.core import (
     StageContext,
     s01_ingest, s02_shots, s03_keyframes, s04_audio_prep, s05_vad, s06_stt,
@@ -58,6 +59,8 @@ STAGES: tuple[StageSpec, ...] = (
 )
 
 STAGE_PAIRS = [(stage.id, stage.label) for stage in STAGES]
+# URL episodes get one extra row in front; the rest of the pipeline is identical.
+DOWNLOAD_STAGE = ("s00_download", "Download")
 STAGE_BY_ID = {stage.id: stage for stage in STAGES}
 
 
@@ -155,6 +158,35 @@ class PipelineRunner:
     def _hash_path(self, episode_id: str, stage_id: str) -> Path:
         return self.store.stage_path(episode_id, stage_id).with_suffix(".hash")
 
+    def fetch_and_run(self, episode_id: str, url: str) -> None:
+        """Download a linked video, then run the exact same pipeline as an upload."""
+        stage_id = DOWNLOAD_STAGE[0]
+        self.database.update_episode(episode_id, status="downloading", progress=0)
+        self.database.update_stage(episode_id, stage_id, status="running", error=None, started_at=datetime.now(UTC), finished_at=None)
+        started, last = time.perf_counter(), [-5]
+
+        def progress(percent: int) -> None:
+            if percent >= last[0] + 5 or percent == 100:
+                last[0] = percent
+                self.database.update_episode(episode_id, progress=percent)
+
+        try:
+            path, title = download(url, self.store.ensure_episode(episode_id), max_bytes=self.settings.max_upload_bytes, on_progress=progress)
+        except Exception as exc:
+            message = str(exc) if isinstance(exc, PipelineError) else f"{type(exc).__name__}: {exc}"
+            self.database.update_stage(episode_id, stage_id, status="failed", error=message, finished_at=datetime.now(UTC))
+            self.database.update_episode(episode_id, status="failed")
+            self._log(episode_id, {"event": "stage_failed", "stage": stage_id, "error": message})
+            return
+        record = self.database.get_episode_record(episode_id)
+        updates: dict = {"source_path": str(path), "status": "queued", "progress": 0}
+        if record is not None and record.title == url:
+            updates["title"] = title
+        self.database.update_episode(episode_id, **updates)
+        self.database.update_stage(episode_id, stage_id, status="done", elapsed=round(time.perf_counter() - started, 3), finished_at=datetime.now(UTC))
+        self._log(episode_id, {"event": "stage_done", "stage": stage_id})
+        self.run(episode_id)
+
     def _run_stage(self, context: StageContext, stage: StageSpec, force: bool, lock: threading.Lock) -> bool:
         episode_id = context.episode_id
         try:
@@ -226,6 +258,14 @@ class PipelineCoordinator:
             if current and not current.done():
                 return False
             self._futures[episode_id] = self.executor.submit(self.runner.run, episode_id, from_stage=from_stage, force=force)
+            return True
+
+    def enqueue_url(self, episode_id: str, url: str) -> bool:
+        with self._lock:
+            current = self._futures.get(episode_id)
+            if current and not current.done():
+                return False
+            self._futures[episode_id] = self.executor.submit(self.runner.fetch_and_run, episode_id, url)
             return True
 
     def running(self, episode_id: str) -> bool:

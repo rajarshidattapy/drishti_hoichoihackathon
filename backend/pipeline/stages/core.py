@@ -134,7 +134,7 @@ def s01_ingest(ctx: StageContext) -> dict:
         raise ArtifactError("Episode database record is missing.")
     source = Path(record.source_path)
     if not source.exists():
-        raise ArtifactError("The registered source video no longer exists.")
+        raise ArtifactError("The registered source video no longer exists. If the server restarted, DATA_DIR is probably not on a persistent disk.")
     metadata = probe(ctx.settings.ffprobe_binary, source, ctx.settings.ffmpeg_binary)
     if metadata["duration"] <= 0:
         raise PipelineError("Could not read a valid video duration.")

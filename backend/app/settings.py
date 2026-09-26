@@ -135,6 +135,14 @@ class Settings(BaseSettings):
     frame_embedder: str = "dhash"
     llm_vision_concurrency: int = 8
     llm_text_concurrency: int = 16
+    # Optional S3-compatible storage (Cloudflare R2) mirroring DATA_DIR, for hosts without a persistent disk.
+    # R2 endpoint: https://<account_id>.r2.cloudflarestorage.com
+    s3_endpoint_url: str | None = None
+    s3_bucket: str | None = None
+    s3_access_key_id: str | None = None
+    s3_secret_access_key: str | None = None
+    s3_region: str = "auto"
+    s3_prefix: str = ""
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     seed_demo: bool = True
     thresholds: Thresholds = Field(default_factory=Thresholds)

@@ -96,6 +96,15 @@ class PipelineRunner:
         """Run the DAG. `from_stage` restarts there (and everything downstream); `only` runs just those stages."""
         context = StageContext(episode_id=episode_id, settings=self.settings, store=self.store, db=self.database)
         self.store.ensure_episode(episode_id)
+        # After a restart on a host without a persistent disk, restore the folder (source, working media,
+        # cached stage artifacts) from storage; then upload anything new, e.g. a fresh upload's source.
+        try:
+            self.store.hydrate(episode_id, media=True)
+        except Exception as exc:
+            self.database.update_episode(episode_id, status="failed")
+            self._log(episode_id, {"event": "pipeline_failed", "error": f"Restoring files from storage failed: {exc}"})
+            raise
+        self.store.sync(episode_id)
         try:
             start = resolve_stage_id(from_stage) if from_stage else None
             selected = {resolve_stage_id(value) for value in only} if only else None
@@ -146,6 +155,7 @@ class PipelineRunner:
 
         if failed:
             self.database.update_episode(episode_id, status="failed")
+            self.store.sync(episode_id)
             return
         complete = all(record.status == "done" for record in self.database.get_stages(episode_id))
         if complete:
@@ -154,6 +164,7 @@ class PipelineRunner:
             # A partial (`only`) run, e.g. GPU stages on another machine; the API worker resumes the rest.
             self.database.update_episode(episode_id, status="queued")
         self._log(episode_id, {"event": "pipeline_done", "elapsed": round(time.perf_counter() - pipeline_started, 3)})
+        self.store.sync(episode_id)
 
     def _hash_path(self, episode_id: str, stage_id: str) -> Path:
         return self.store.stage_path(episode_id, stage_id).with_suffix(".hash")
@@ -211,6 +222,8 @@ class PipelineRunner:
             with lock:
                 self.database.update_stage(episode_id, stage.id, status="done", elapsed=elapsed, error=None, input_hash=input_hash, finished_at=datetime.now(UTC))
             self._log(episode_id, {"event": "stage_done", "stage": stage.id, "elapsed": elapsed})
+            # Persist this stage's files (artifacts and any media it wrote) before moving on.
+            self.store.sync(episode_id)
             return True
         except Exception as exc:
             message = str(exc) if isinstance(exc, PipelineError) else f"{type(exc).__name__}: {exc}"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import os
 import shutil
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -12,7 +13,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 
 from pipeline.ads import decide, load_catalogue, select_brand_for
 from pipeline.errors import PipelineError
@@ -69,10 +70,15 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
         # Resume interrupted or partially processed episodes (e.g. GPU stages synced from another
         # machine); valid artifacts are detected by the runner's hash sidecars and skipped.
         for record in database.list_episode_records():
-            if record.status in {"queued", "processing"} and record.source_path:
+            if record.status not in {"queued", "processing", "downloading"} or not belongs_here(record):
+                continue
+            if record.status == "downloading":
+                store.hydrate(record.id)
+                if store.source_url_path(record.id).exists():
+                    coordinator.enqueue_url(record.id, store.source_url_path(record.id).read_text(encoding="utf-8").strip())
+            elif record.source_path and (store.mirror is not None or Path(record.source_path).exists()):
+                # With storage configured, the run restores the source and cached stages first.
                 coordinator.enqueue(record.id)
-            elif record.status == "downloading" and store.source_url_path(record.id).exists():
-                coordinator.enqueue_url(record.id, store.source_url_path(record.id).read_text(encoding="utf-8").strip())
         yield
         coordinator.shutdown()
         database.close()
@@ -101,16 +107,31 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "Episode not found.")
         return record
 
+    def belongs_here(record: EpisodeRecord) -> bool:
+        """False for episodes created by another machine sharing this database (their files live elsewhere).
+        Resuming those here would only fail s01 and mark the other machine's episode as failed."""
+        if not record.source_path:
+            return record.status == "downloading"
+        try:
+            return Path(record.source_path).resolve().is_relative_to(settings.episodes_dir.resolve())
+        except (OSError, ValueError):
+            return False
+
     def save_timeline(episode_id: str, timeline: SemanticTimeline) -> None:
         store.write_json(store.output_path(episode_id, "semantic_timeline.json"), timeline)
 
     def timeline_or_409(episode_id: str) -> SemanticTimeline:
         record = episode_or_404(episode_id)
+        store.hydrate(episode_id)
         path = store.output_path(episode_id, "semantic_timeline.json")
         if not path.exists():
             failed = next((stage for stage in database.get_stages(episode_id) if stage.status == "failed"), None)
             if failed:
                 raise HTTPException(409, {"message": "Timeline is unavailable because processing failed.", "stage": failed.stage_id, "error": failed.error})
+            if record.status == "processed":
+                # The database row exists but the files don't: processed on another machine sharing this
+                # database, or DATA_DIR was wiped by a restart and no object storage (S3_BUCKET) holds a copy.
+                raise HTTPException(404, {"message": "This episode's files aren't on this server. It was processed on another machine, or the server's storage was reset. Upload it again here."})
             raise HTTPException(409, {"message": "Timeline is still processing.", "status": record.status, "progress": record.progress})
         try:
             return SemanticTimeline.model_validate(store.read_json(path))
@@ -119,7 +140,9 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
 
     @api.get("/health")
     def health() -> dict:
-        return {"status": "ok", "worker": "local", "schema_version": "1.0"}
+        # Files survive restarts if data_dir_mounted (a persistent disk) or object_storage (an S3/R2 copy) is true.
+        return {"status": "ok", "worker": "local", "schema_version": "1.0", "data_dir_mounted": os.path.ismount(settings.data_dir),
+                "object_storage": store.mirror is not None}
 
     @api.get("/episodes", response_model=list[EpisodeSummary])
     def list_episodes() -> list[EpisodeSummary]:
@@ -144,7 +167,7 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(422, str(exc)) from exc
             episode_id = f"ep-{uuid4().hex[:12]}"
             store.ensure_episode(episode_id)
-            store.source_url_path(episode_id).write_text(url, encoding="utf-8")
+            store.write_text(store.source_url_path(episode_id), url)
             database.create_episode(EpisodeRecord(id=episode_id, title=title or url, source_path="", status="downloading", progress=0), [DOWNLOAD_STAGE, *STAGE_PAIRS])
             coordinator.enqueue_url(episode_id, url)
             return database.summary(episode_or_404(episode_id))
@@ -228,8 +251,9 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
     @api.get("/episodes/{episode_id}/timeline", response_model=SemanticTimeline)
     def get_timeline(episode_id: str, partial: bool = False) -> SemanticTimeline:
         """With partial=true, returns whatever is ready so far while the episode is still processing."""
+        record = episode_or_404(episode_id)
+        store.hydrate(episode_id)
         if partial and not store.output_path(episode_id, "semantic_timeline.json").exists():
-            record = episode_or_404(episode_id)
             timeline = assemble_partial(store, database, episode_id)
             if timeline is None:
                 raise HTTPException(409, {"message": "Nothing is ready yet.", "status": record.status})
@@ -320,29 +344,41 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
         return FileResponse(path, media_type="video/mp4")
 
     @api.get("/episodes/{episode_id}/frames/{name}")
-    def get_frame(episode_id: str, name: str) -> FileResponse:
+    def get_frame(episode_id: str, name: str) -> Response:
         episode_or_404(episode_id)
         try:
             path = store.safe_child(store.episode_dir(episode_id) / "frames", name)
         except ValueError as exc:
             raise HTTPException(400, "Invalid frame path.") from exc
         if not path.is_file():
+            remote = store.remote_url(episode_id, f"frames/{path.name}")
+            if remote:
+                return RedirectResponse(remote, status_code=307)
             raise HTTPException(404, "Frame not found.")
         return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
     @api.get("/episodes/{episode_id}/video")
-    def get_video(episode_id: str) -> FileResponse:
+    def get_video(episode_id: str) -> Response:
         record = episode_or_404(episode_id)
+        store.hydrate(episode_id)
         ingest_path = store.stage_path(episode_id, "s01_ingest")
         path: Path | None = None
+        relative: str | None = None
         if ingest_path.exists():
             ingest = store.read_json(ingest_path)
-            candidate = store.safe_child(store.episode_dir(episode_id), ingest.get("proxy", ingest["source"]))
+            relative = ingest.get("proxy", ingest["source"])
+            candidate = store.safe_child(store.episode_dir(episode_id), relative)
             if candidate.is_file():
                 path = candidate
         if path is None and record.source_path and Path(record.source_path).is_file():
             path = Path(record.source_path)
         if path is None:
+            # Not on this server's disk (e.g. after a restart): let the browser stream it from storage.
+            if relative is None and belongs_here(record):
+                relative = Path(record.source_path).name
+            remote = store.remote_url(episode_id, relative) if relative else None
+            if remote:
+                return RedirectResponse(remote, status_code=307)
             raise HTTPException(404, "No playable video is attached to this episode.")
         media_type = "video/webm" if path.suffix.lower() == ".webm" else "video/mp4"
         return FileResponse(path, media_type=media_type, filename=None)
@@ -353,6 +389,7 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
         if kind not in {"sub", "cc"} or fmt not in {"srt", "vtt"}:
             raise HTTPException(404, "Subtitle format not found.")
         suffix = "" if kind == "sub" else "_cc"
+        store.hydrate(episode_id)
         path = store.output_path(episode_id, f"episode_bn{suffix}.{fmt}")
         if not path.is_file():
             raise HTTPException(409, "Subtitle output is not ready.")

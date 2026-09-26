@@ -9,21 +9,21 @@ services:
     dockerContext: ./backend
     # Neon lives in AWS us-east-2, i.e. Ohio.
     region: ohio
-    # ffmpeg re-encodes and the pipeline need more than 512 MB; disks also need a paid plan.
-    plan: 1c-2g
-    # A persistent disk pins the service to one instance, which the in-memory job queue needs anyway.
+    # Free plan: no persistent disk, and the service sleeps after ~15 min idle, wiping /data.
+    # Episode files are kept in R2 (S3_* below) and restored on demand, so nothing is lost.
+    # 512 MB RAM is tight for long episodes; if processing gets killed, move up to a paid plan.
+    plan: free
+    # One instance: the job queue lives in the API process.
     numInstances: 1
     healthCheckPath: /health
     autoDeployTrigger: commit
-    disk:
-      name: drishti-data
-      mountPath: /data
-      sizeGB: 10
     envVars:
       - key: DATA_DIR
         value: /data
       - key: CORS_ORIGINS
         value: https://drishti-hoichoihackathon.vercel.app,http://localhost:3000
+      - key: S3_REGION
+        value: auto
       # Secrets: Render prompts for these when the Blueprint is first created.
       - key: DATABASE_URL
         sync: false
@@ -32,4 +32,14 @@ services:
       - key: SARVAM_API_KEY
         sync: false
       - key: HF_TOKEN
+        sync: false
+      # Cloudflare R2: https://<account_id>.r2.cloudflarestorage.com, the bucket name, and an
+      # R2 API token with Object Read & Write on that bucket.
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
         sync: false

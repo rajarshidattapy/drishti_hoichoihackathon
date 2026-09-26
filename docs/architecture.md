@@ -14,18 +14,21 @@ flowchart LR
     subgraph Vercel
         FE[Next.js frontend<br/>drishti-hoichoihackathon.vercel.app]
     end
-    subgraph Render["Render (Docker web service, 1 instance)"]
+    subgraph Render["Render (Docker web service, free plan, 1 instance)"]
         API[FastAPI + in-process worker]
-        DISK[(Persistent disk<br/>/data)]
+        DISK[(Working copy<br/>/data, wiped on restart)]
     end
     NEON[(Neon Postgres<br/>AWS us-east-2)]
+    R2[(Cloudflare R2<br/>episode files)]
     SARVAM[Sarvam API<br/>Bengali STT + diarization]
     OPENAI[OpenAI API<br/>vision + text LLM]
     SRC[YouTube / Google Drive]
 
     B -- pages, JS --> FE
-    B -- "REST: uploads, timeline, VMAP, video" --> API
+    B -- "REST: uploads, timeline, VMAP" --> API
+    B -. "video, frames (signed URLs)" .-> R2
     API --> DISK
+    API -- "upload after each stage,<br/>restore on demand" --> R2
     API --> NEON
     API --> SARVAM
     API --> OPENAI
@@ -37,11 +40,13 @@ flowchart LR
 | Frontend | Vercel project rooted at `frontend/` | `frontend/vercel.json`, env `NEXT_PUBLIC_API_URL` |
 | Backend | Render Docker web service rooted at `backend/` | [`render.yaml`](../render.yaml), [`backend/Dockerfile`](../backend/Dockerfile) |
 | Database | Neon Postgres (SQLite at `/data/drishti.db` if `DATABASE_URL` is unset) | env `DATABASE_URL` |
-| Video + artifacts | Render persistent disk mounted at `/data` | env `DATA_DIR=/data` |
+| Episode files | Working copy in `/data` (temporary on the free plan), durable copy in Cloudflare R2 | env `DATA_DIR=/data`, `S3_*` |
 
 **The browser talks to Render directly.** `NEXT_PUBLIC_API_URL` must be the Render URL, not the `/api` rewrite in `frontend/next.config.ts`. A request through Vercel is capped at 4.5 MB, which rejects any real video upload with a 413. `NEXT_PUBLIC_*` values are baked in at build time, so changing it needs a frontend redeploy.
 
-**The backend must run as exactly one instance.** The job queue lives in process memory and episode files live on a disk only that instance can mount. Render enforces this anyway: a service with a disk can't scale out.
+**The backend must run as exactly one instance.** The job queue lives in process memory, so a second instance wouldn't see the first one's jobs.
+
+**The free plan wipes `/data` on every restart,** including the sleep after about 15 minutes idle. Episode status survives in Neon and episode files survive in R2 (see [Storage](#4-storage)). A persistent disk also works: leave `S3_BUCKET` empty and mount a disk at `/data` on a paid plan.
 
 The backend's old Vercel deployment (`backend/vercel.json`) still works for the read-only demo, but can't process uploads: 4.5 MB request limit, ephemeral `/tmp`, and no background work after a response.
 
@@ -133,7 +138,7 @@ LLM responses are cached separately under `cache/llm/`, keyed by model, prompt, 
 
 ### Restart behaviour
 
-On startup (FastAPI lifespan), every episode left in `queued`, `processing` or `downloading` is re-enqueued. Stages that finished are cache hits; the one that was mid-flight when the container stopped runs again from scratch. A Render redeploy therefore delays jobs but doesn't lose them.
+On startup (FastAPI lifespan), every episode left in `queued`, `processing` or `downloading` is re-enqueued, provided it was created in this environment (its source path is under this `DATA_DIR`). With object storage configured, the run first restores the episode folder from R2, so stages that finished are cache hits and only the one that was mid-flight runs again. A redeploy or free-plan sleep therefore delays jobs but doesn't lose them.
 
 ### Providers and fallbacks
 
@@ -152,7 +157,7 @@ On startup (FastAPI lifespan), every episode left in `queued`, `processing` or `
 
 **Database (Neon):** only small, relational state. One `EpisodeRecord` per episode (title, source path, status, progress, duration, dimensions) and one `StageRecord` per stage (status, elapsed, error, input hash, timestamps). The UI's library and progress views read only this.
 
-**Disk (`DATA_DIR`):** everything else.
+**Files (`DATA_DIR`):** everything else, in this layout.
 
 ```
 /data
@@ -169,7 +174,16 @@ On startup (FastAPI lifespan), every episode left in `queued`, `processing` or `
     └── logs/pipeline.jsonl     # stage start/done/failed/cached events, LLM calls
 ```
 
-Because stage status is in Postgres but artifacts are on one machine's disk, **each environment needs its own database**. If local dev and Render share one Neon database, each one's startup resume will try to process the other's episodes, fail to find the files, and mark them `failed`. Give Render its own Neon branch.
+**Object storage (R2).** With `S3_BUCKET` set (`app/mirror.py`), the folder above is mirrored to the bucket under the same paths (`episodes/{id}/...`):
+
+- **Upload:** files written through the artifact store upload immediately; after every stage, and at the end of a run, the runner uploads any new or changed file in the episode folder, including media written by ffmpeg. Upload errors are logged and retried on the next sync.
+- **Restore for reading:** the first request for an episode (timeline, subtitles, video) downloads its small files (stage artifacts, outputs, LLM cache, logs), but not media.
+- **Media:** `/video` and `/frames/{name}` redirect (307) to a 12-hour signed R2 URL when the file isn't on local disk, so the browser streams directly from R2, with seeking.
+- **Restore for processing:** a pipeline run downloads everything, media included, before it starts.
+
+Without `S3_BUCKET`, files exist only in `DATA_DIR`, which then needs a persistent disk. `/health` reports `data_dir_mounted` and `object_storage`; if both are `false` in production, files vanish on restart.
+
+Because stage status is in Postgres but files belong to one environment, **each environment needs its own database** (and its own bucket). If local dev and Render share one Neon database, each one's startup resume will try to process the other's episodes, fail to find the files, and mark them `failed`. Give Render its own Neon branch. As a safeguard, startup resume skips episodes whose source file isn't on this machine, and an episode marked processed whose files are missing returns a 404 explaining that, rather than a 409.
 
 ---
 
@@ -213,7 +227,7 @@ The catalogue lives inside `backend/` so that every deployment (Docker image, Ve
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/health` | Liveness check (Render health check) |
+| GET | `/health` | Liveness check (Render health check). Also reports `data_dir_mounted` and `object_storage`: if both are `false` in production, files vanish on restart |
 | GET / POST | `/episodes` | List episodes / create one by upload, URL or local path |
 | GET | `/episodes/{id}` | Status, progress, per-stage state |
 | GET | `/episodes/{id}/events` | SSE progress stream (used by the episode page) |
@@ -223,7 +237,7 @@ The catalogue lives inside `backend/` so that every deployment (Docker image, Ve
 | GET / PATCH | `/episodes/{id}/ads[/{cand_id}]` | Recompute or override ad decisions |
 | GET | `/episodes/{id}/ads/vmap.xml`, `/ads/debug` | Ad manifest, decision debug JSON |
 | GET | `/ads/creatives/{brand}/{creative}.mp4` | Ad creative video |
-| GET | `/episodes/{id}/video`, `/frames/{name}` | Proxy video, keyframes |
+| GET | `/episodes/{id}/video`, `/frames/{name}` | Proxy video, keyframes (redirect to R2 when not on local disk) |
 | GET | `/episodes/{id}/subs/{kind}.{fmt}`, `/export/{name}` | Subtitle/caption files, exports |
 | GET | `/search`, `/schema` | Search, timeline JSON Schema |
 
@@ -239,6 +253,7 @@ Set on Render (see `render.yaml`) or in `backend/.env` locally. The full list wi
 |---|---|
 | `DATABASE_URL` | Postgres URL (Neon). Unset → SQLite under `DATA_DIR` |
 | `DATA_DIR` | Artifact root. `/data` on Render |
+| `S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION` | Durable copy of episode files in R2 (endpoint `https://<account_id>.r2.cloudflarestorage.com`, region `auto`). Unset → local disk only |
 | `CORS_ORIGINS` | Comma-separated origins allowed to call the API. Must include the Vercel URL |
 | `SARVAM_API_KEY`, `OPENAI_API_KEY`, `HF_TOKEN` | Provider credentials |
 | `LLM_MODEL_DEFAULT`, `LLM_MODEL_SCENES` | OpenAI models (default `gpt-4.1-mini`) |
@@ -253,7 +268,8 @@ Set on Render (see `render.yaml`) or in `backend/.env` locally. The full list wi
 
 ## 8. Limits and known trade-offs
 
-- **Single instance.** The queue is in memory and files are on one disk. Scaling out needs an external queue (e.g. RQ/Redis) and object storage (S3/R2) for artifacts. `PipelineCoordinator` was written to be swappable for RQ without changing routes.
+- **Single instance.** The queue is in memory. Scaling out needs an external queue (e.g. RQ/Redis); files are already in R2. `PipelineCoordinator` was written to be swappable for RQ without changing routes.
+- **Free-plan limits.** 512 MB RAM can be too little to re-encode or process a long episode, and a job stops when the service sleeps; it resumes on the next request that wakes the service. The progress stream keeps the service awake while the episode page is open.
 - **Uploads pass through the API.** Fine on Render. On a host with a small body limit, uploads would need to go straight from the browser to object storage.
 - **A restart re-runs the stage that was mid-flight.** Long stages (s06 on a long episode) are the costliest to repeat.
 - **Heavy local models aren't in the image.** Production uses ffmpeg/heuristic fallbacks for shots, VAD and audio events unless GPU stages are run elsewhere and synced back.

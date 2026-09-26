@@ -5,6 +5,8 @@ Drishti turns a Bengali episode into one semantic timeline for ad intelligence, 
 <img width="1919" height="1105" alt="image" src="data/image.png" />
 
 
+Backend deployed at: https://drishti-hoichoihackathon.onrender.com/docs
+
 The app includes a populated demo episode, so all workspace interactions are available without model credentials or a source video.
 
 ## Run locally
@@ -65,13 +67,18 @@ To run the UI with no backend at all, set `NEXT_PUBLIC_USE_MOCK=true` in `fronte
 
 The frontend runs on Vercel and the backend on Render (Docker), with Neon Postgres as the database. See [`docs/architecture.md`](docs/architecture.md) for how the pieces fit together.
 
-**Backend (Render).** The repo includes a Render Blueprint, [`render.yaml`](render.yaml), which builds [`backend/Dockerfile`](backend/Dockerfile) (Python 3.11 + ffmpeg) as a single-instance web service with a persistent disk at `/data`.
+**Backend (Render).** The repo includes a Render Blueprint, [`render.yaml`](render.yaml), which builds [`backend/Dockerfile`](backend/Dockerfile) (Python 3.11 + ffmpeg) as a single-instance web service on the free plan. The free plan has no persistent disk, so episode files are kept in Cloudflare R2 and restored after restarts.
+
+Before deploying, create an R2 bucket in Cloudflare, plus an R2 API token with **Object Read & Write** on it. Note the account ID for the endpoint.
 
 1. In Render, choose **New → Blueprint** and select this repository.
-2. When prompted, fill in `DATABASE_URL` (Neon; use a separate branch from local dev), `OPENAI_API_KEY`, `SARVAM_API_KEY` and, optionally, `HF_TOKEN`.
+2. When prompted, fill in:
+   - `DATABASE_URL` (Neon; use a separate branch from local dev)
+   - `OPENAI_API_KEY`, `SARVAM_API_KEY` and, optionally, `HF_TOKEN`
+   - `S3_ENDPOINT_URL` (`https://<account_id>.r2.cloudflarestorage.com`), `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`
 3. `CORS_ORIGINS` is preset to the production frontend URL and `http://localhost:3000`. Edit it in `render.yaml` if the frontend URL changes.
 
-Keep the service at one instance: the job queue runs inside the API process and episode files live on its disk.
+Keep the service at one instance: the job queue runs inside the API process. After deploying, `/health` should show `"object_storage": true`.
 
 **Frontend (Vercel).** Create a Vercel project with **Root Directory** `frontend` and set:
 

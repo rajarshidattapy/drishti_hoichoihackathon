@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 import time
 from pathlib import Path
@@ -36,6 +37,8 @@ class StructuredLLM:
         schema: type[SchemaT],
         stage: str,
         max_retries: int = 2,
+        images: list[Path] | None = None,
+        image_detail: str = "low",
     ) -> SchemaT:
         if not self.settings.openai_api_key:
             raise ConfigurationError("OPENAI_API_KEY is missing.")
@@ -44,7 +47,8 @@ class StructuredLLM:
         except ImportError as exc:
             raise ConfigurationError("OpenAI provider package is missing. Install with: pip install -e '.[providers]'") from exc
 
-        serialized = json.dumps({"model": model, "system": system, "user": user, "schema": schema.model_json_schema()}, ensure_ascii=False, sort_keys=True)
+        image_hashes = [self.store.file_hash(path) for path in images or []]
+        serialized = json.dumps({"model": model, "system": system, "user": user, "schema": schema.model_json_schema(), "images": image_hashes, "detail": image_detail}, ensure_ascii=False, sort_keys=True)
         key = hashlib.sha256(serialized.encode()).hexdigest()
         cache_path = self.store.episode_dir(self.episode_id) / "cache" / "llm" / f"{key}.json"
         if cache_path.exists():
@@ -55,9 +59,18 @@ class StructuredLLM:
         started = time.perf_counter()
         for attempt in range(max_retries + 1):
             try:
+                user_content: str | list[dict]
+                if images:
+                    user_content = [{"type": "input_text", "text": user}]
+                    for path in images:
+                        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+                        media_type = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+                        user_content.append({"type": "input_image", "image_url": f"data:{media_type};base64,{encoded}", "detail": image_detail})
+                else:
+                    user_content = user
                 response = client.responses.parse(
                     model=model,
-                    input=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                    input=[{"role": "system", "content": system}, {"role": "user", "content": user_content}],
                     text_format=schema,
                     temperature=0.1,
                 )
@@ -83,4 +96,3 @@ class StructuredLLM:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-

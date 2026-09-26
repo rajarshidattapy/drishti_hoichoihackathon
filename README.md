@@ -12,7 +12,7 @@ Start the API:
 
 ```powershell
 cd backend
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev,media]"
 python -m uvicorn app.main:app --reload --port 8000
 ```
 
@@ -38,7 +38,18 @@ Open `http://localhost:3000`. FastAPI docs are at `http://localhost:8000/docs`.
 - Timeline, cue-point, and QC exports
 - FastAPI SSE progress stream and published Pydantic JSON Schema
 
-The upload path uses a short simulated stage runner and attaches the demo semantic data until real artifacts are written. GPU/media/ASR/LLM pipeline stages described in `docs/technical.md` require their respective models, credentials, and worker infrastructure; the web/API contracts are ready for those outputs.
+Uploaded episodes run through a persistent, cached 18-stage pipeline. Install provider adapters and configure credentials for live Bengali diarization and multimodal understanding:
+
+```powershell
+cd backend
+python -m pip install -e ".[providers]"
+Copy-Item .env.example .env
+# Set SARVAM_API_KEY and OPENAI_API_KEY in .env
+```
+
+Without `SARVAM_API_KEY`, a real upload stops at `s06_stt` with a retryable stage error; it never receives demo output. Stages before that point—including media probing, proxying, shot detection, keyframes, audio preparation, and VAD—remain cached. Add the key and call `POST /episodes/{id}/rerun` with `{"from_stage":"s06_stt","force":false}`.
+
+The bundled demo is seeded as a separate processed episode. Audio-event classification and optional GPU model upgrades described in `docs/technical.md` remain pluggable; the baseline records their provider status and avoids unsupported claims.
 
 ## Verify
 
@@ -49,4 +60,3 @@ python -m pytest tests -q
 cd ..\frontend
 npm run build
 ```
-

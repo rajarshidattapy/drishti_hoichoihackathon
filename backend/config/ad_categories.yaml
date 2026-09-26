@@ -1,0 +1,66 @@
+mobile:
+  - smartphone
+  - phone
+  - mobile
+  - earphones
+  - charger
+  - ফোন
+  - মোবাইল
+  - চার্জার
+food_delivery:
+  - food
+  - restaurant
+  - biryani
+  - pizza
+  - order
+  - hungry
+  - খাবার
+  - রেস্তোরাঁ
+  - বিরিয়ানি
+  - অর্ডার
+fashion:
+  - saree
+  - dress
+  - clothes
+  - shoes
+  - jewellery
+  - শাড়ি
+  - জামা
+  - পোশাক
+travel:
+  - trip
+  - vacation
+  - flight
+  - hotel
+  - train
+  - darjeeling
+  - puri
+  - ট্রেন
+  - বিমান
+  - হোটেল
+finance:
+  - loan
+  - bank
+  - salary
+  - money
+  - insurance
+  - upi
+  - লোন
+  - ব্যাঙ্ক
+  - টাকা
+beauty:
+  - makeup
+  - cream
+  - shampoo
+  - skincare
+  - মেকআপ
+  - ক্রিম
+  - শ্যাম্পু
+auto:
+  - car
+  - bike
+  - scooter
+  - গাড়ি
+  - বাইক
+  - স্কুটার
+

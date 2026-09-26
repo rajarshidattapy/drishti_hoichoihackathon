@@ -202,6 +202,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .json-view { margin: 18px; border: 1px solid var(--line); background: #0c0f16; }.json-tools { min-height: 45px; display: flex; align-items: center; justify-content: space-between; padding: 0 11px; border-bottom: 1px solid var(--line); background: #141924; }.json-tools > div { display: flex; align-items: center; gap: 8px; }.json-tools strong { font-size: 10px; }.json-tools span { color: var(--muted); font-size: 8px; }.json-view pre { max-height: 520px; overflow: auto; margin: 0; padding: 18px; color: #9fc7ff; font: 10px/1.65 "Cascadia Code", Consolas, monospace; white-space: pre-wrap; }
 
 .state-screen { min-height: 100vh; display: grid; place-content: center; justify-items: center; text-align: center; background: radial-gradient(circle at 50% 43%, #1b2434, var(--ink) 42%); }.state-screen h1 { margin: 23px 0 8px; font-size: 25px; }.state-screen p { color: var(--muted); max-width: 440px; line-height: 1.6; }.state-screen.error svg { color: var(--coral); }.state-screen .primary-button { margin-top: 14px; }
+.loading-progress { width: min(360px, 70vw); height: 4px; margin-top: 16px; background: #242c39; overflow: hidden; }.loading-progress i { display: block; height: 100%; background: var(--mint); transition: width .35s ease; }
 
 @media (max-width: 1000px) {
   .section-heading { grid-template-columns: 1fr; }.table-labels { display: none; }

@@ -56,10 +56,13 @@ class Settings(BaseSettings):
         return self.data_dir / "episodes"
 
     @property
+    def config_dir(self) -> Path:
+        return PROJECT_ROOT / "backend" / "config"
+
+    @property
     def sqlite_url(self) -> str:
         return self.database_url or f"sqlite:///{(self.data_dir / 'drishti.db').as_posix()}"
 
     @property
     def allowed_origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
-

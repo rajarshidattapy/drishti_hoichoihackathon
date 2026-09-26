@@ -11,12 +11,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
 
+import yaml
+from pydantic import BaseModel, Field
 from app.artifacts import ArtifactStore
 from app.db import Database
 from app.models import SemanticTimeline
 from app.settings import Settings
 from pipeline.errors import ArtifactError, PipelineError
 from pipeline.media import detect_silences, probe, run
+from pipeline.llm import StructuredLLM
 from pipeline.sarvam import SarvamClient
 from pipeline.scoring import score_candidate, select_candidates
 from pipeline.subtitles import format_utterances, grapheme_len, write_srt, write_vtt
@@ -94,7 +97,9 @@ def _difference_hash(path: Path) -> int | None:
     except ImportError:
         return None
     with Image.open(path) as image:
-        pixels = list(image.convert("L").resize((9, 8)).getdata())
+        resized = image.convert("L").resize((9, 8))
+        flattened = getattr(resized, "get_flattened_data", resized.getdata)
+        pixels = list(flattened())
     value = 0
     for row in range(8):
         for column in range(8):
@@ -207,15 +212,56 @@ def s08_audio_events(ctx: StageContext) -> dict:
     return {"events": [], "loudness": normalized, "music": [], "event_detector": "not_configured", "loudness_method": "pcm_rms"}
 
 
+class VisualItem(BaseModel):
+    shot_id: str
+    location: str
+    indoor: bool | None
+    objects: list[str]
+    visible_brands: list[str]
+    activity: str
+    visual_mood: str
+    people_count: int = Field(ge=0)
+    confidence: float = Field(ge=0, le=1)
+
+
+class VisualBatch(BaseModel):
+    items: list[VisualItem]
+
+
 def s09_vision_baseline(ctx: StageContext) -> dict:
     shots = ctx.stage("s03_keyframes")["shots"]
     tags = {}
+    llm = StructuredLLM(ctx.settings, ctx.store, ctx.episode_id)
+    if llm.available():
+        unique = [shot for shot in shots if shot["keyframe"]]
+        for offset in range(0, len(unique), 4):
+            batch = unique[offset:offset + 4]
+            frame_paths = [ctx.root / shot["keyframe"] for shot in batch]
+            response = llm.call(
+                model=ctx.settings.llm_model_default,
+                system="Analyze drama keyframes conservatively. Name only objects and brands clearly visible. Use short consistent English tags.",
+                user="Return one item per image in this exact order and use these shot IDs: " + ", ".join(shot["shot_id"] for shot in batch),
+                schema=VisualBatch,
+                stage="s09_vision_baseline",
+                images=frame_paths,
+                image_detail="low",
+            )
+            by_id = {item.shot_id: item for item in response.items}
+            for shot in batch:
+                item = by_id.get(shot["shot_id"])
+                if item:
+                    tags[shot["shot_id"]] = item.model_dump(exclude={"shot_id"})
     for shot in shots:
+        if shot["shot_id"] in tags:
+            continue
+        if shot["dup_of"] and shot["dup_of"] in tags:
+            tags[shot["shot_id"]] = tags[shot["dup_of"]]
+            continue
         tags[shot["shot_id"]] = {
             "location": "unknown", "indoor": None, "objects": [], "visible_brands": [],
             "activity": "unknown", "visual_mood": "neutral", "people_count": 0, "confidence": 0.0,
         }
-    return {"visual_tags": tags, "provider": "conservative_fallback", "note": "Install provider extras and configure OPENAI_API_KEY for vision labels."}
+    return {"visual_tags": tags, "provider": "openai" if llm.available() else "conservative_fallback", "note": None if llm.available() else "Install provider extras and configure OPENAI_API_KEY for vision labels."}
 
 
 def s10_scenes(ctx: StageContext) -> dict:
@@ -243,45 +289,158 @@ def s10_scenes(ctx: StageContext) -> dict:
     return {"scenes": scenes, "method": "shot_window_baseline", "llm_validated": False}
 
 
-ENTITY_TERMS = {
-    "mobile": [("smartphone", "ফোন", r"ফোন|মোবাইল|smartphone|mobile")],
-    "food_delivery": [("biryani", "বিরিয়ানি", r"বিরিয়ানি|খাবার|অর্ডার|food|order")],
-    "travel": [("train", "ট্রেন", r"ট্রেন|রেল|train|flight|বিমান|হোটেল")],
-    "finance": [("money", "টাকা", r"টাকা|ব্যাঙ্ক|লোন|salary|money|bank|loan")],
-    "fashion": [("clothing", "পোশাক", r"শাড়ি|জামা|পোশাক|dress|shoes")],
-}
+class DraftMention(BaseModel):
+    utt_id: str
+    surface: str
+
+
+class EntityDraft(BaseModel):
+    name: str
+    name_bn: str | None
+    kind: str
+    brand: str | None
+    ad_categories: list[str]
+    sentiment: str
+    mentions: list[DraftMention]
+    confidence: float = Field(ge=0, le=1)
+
+
+class EntityDrafts(BaseModel):
+    entities: list[EntityDraft]
 
 
 def s11_entities_dialogue(ctx: StageContext) -> dict:
     utterances, scenes = ctx.stage("s07_transcript_clean")["utterances"], ctx.stage("s10_scenes")["scenes"]
     entities = []
-    for category, terms in ENTITY_TERMS.items():
-        for name, name_bn, pattern in terms:
-            mentions = []
-            for utterance in utterances:
-                match = re.search(pattern, utterance["text"], re.IGNORECASE)
+    category_path = ctx.settings.config_dir / "ad_categories.yaml"
+    categories: dict[str, list[str]] = yaml.safe_load(category_path.read_text(encoding="utf-8"))
+    for category, terms in categories.items():
+        matches: dict[str, list[dict]] = {}
+        for utterance in utterances:
+            for term in sorted(terms, key=len, reverse=True):
+                match = re.search(re.escape(term), utterance["text"], re.IGNORECASE)
                 if match:
-                    mentions.append({"source": "dialogue", "time": utterance["start"], "utt_id": utterance["utt_id"], "shot_id": None, "surface": match.group(0)})
-            if mentions:
-                entities.append({
-                    "entity_id": f"entity_{len(entities) + 1:04d}", "name": name, "name_bn": name_bn,
-                    "kind": "product", "brand": None, "ad_categories": [category], "mentions": mentions,
-                    "sentiment": "neutral", "presence": "unverified", "visual_check": None, "confidence": .72,
-                })
+                    matches.setdefault(term.casefold(), []).append({"source": "dialogue", "time": utterance["start"], "utt_id": utterance["utt_id"], "shot_id": None, "surface": match.group(0)})
+        for term, mentions in matches.items():
+            entities.append({
+                "entity_id": f"entity_{len(entities) + 1:04d}", "name": term, "name_bn": term if re.search(r"[\u0980-\u09FF]", term) else None,
+                "kind": "food" if category == "food_delivery" else "product", "brand": None, "ad_categories": [category], "mentions": mentions,
+                "sentiment": "neutral", "presence": "unverified", "visual_check": None, "confidence": .72,
+            })
+    llm = StructuredLLM(ctx.settings, ctx.store, ctx.episode_id)
+    if llm.available():
+        by_utterance = {utterance["utt_id"]: utterance for utterance in utterances}
+        allowed_categories = sorted(categories)
+        for scene in scenes:
+            scene_utterances = [by_utterance[utt_id] for utt_id in scene["utt_ids"] if utt_id in by_utterance]
+            if not scene_utterances:
+                continue
+            drafts = llm.call(
+                model=ctx.settings.llm_model_default,
+                system=(
+                    "Extract grounded dialogue entities from Bengali or code-mixed speech. Every mention must cite an input utt_id. "
+                    "Resolve implicit product references only within this scene. Do not invent brands. "
+                    f"ad_categories must come from: {', '.join(allowed_categories)}."
+                ),
+                user="Scene utterances:\n" + "\n".join(f"{item['utt_id']} [{item['speaker']}]: {item['text']}" for item in scene_utterances),
+                schema=EntityDrafts,
+                stage="s11_entities_dialogue",
+            )
+            for draft in drafts.entities:
+                grounded = [mention for mention in draft.mentions if mention.utt_id in by_utterance and mention.utt_id in scene["utt_ids"]]
+                if not grounded:
+                    continue
+                key = (draft.name.casefold(), (draft.brand or "").casefold())
+                existing = next((entity for entity in entities if (entity["name"].casefold(), (entity.get("brand") or "").casefold()) == key), None)
+                normalized_mentions = [{
+                    "source": "dialogue", "time": by_utterance[mention.utt_id]["start"], "utt_id": mention.utt_id,
+                    "shot_id": None, "surface": mention.surface,
+                } for mention in grounded]
+                if existing:
+                    known = {(mention["utt_id"], mention["surface"]) for mention in existing["mentions"]}
+                    existing["mentions"].extend(mention for mention in normalized_mentions if (mention["utt_id"], mention["surface"]) not in known)
+                    existing["ad_categories"] = sorted(set(existing["ad_categories"]) | (set(draft.ad_categories) & set(allowed_categories)))
+                    existing["confidence"] = max(existing["confidence"], draft.confidence)
+                else:
+                    entities.append({
+                        "entity_id": f"entity_{len(entities) + 1:04d}", "name": draft.name, "name_bn": draft.name_bn,
+                        "kind": draft.kind if draft.kind in {"product", "brand", "place", "food", "activity", "topic", "other"} else "other",
+                        "brand": draft.brand, "ad_categories": sorted(set(draft.ad_categories) & set(allowed_categories)),
+                        "mentions": normalized_mentions,
+                        "sentiment": draft.sentiment if draft.sentiment in {"positive", "neutral", "negative"} else "neutral",
+                        "presence": "unverified", "visual_check": None, "confidence": draft.confidence,
+                    })
     for scene in scenes:
         scene["entity_ids"] = [entity["entity_id"] for entity in entities if any(scene["start"] <= mention["time"] < scene["end"] for mention in entity["mentions"])]
-    return {"entities": entities, "scenes": scenes, "extractor": "grounded_keyword_baseline"}
+        for brand in scene["visual"].get("visible_brands", []):
+            entity = {
+                "entity_id": f"entity_{len(entities) + 1:04d}", "name": brand, "name_bn": None,
+                "kind": "brand", "brand": brand, "ad_categories": [],
+                "mentions": [{"source": "visual", "time": scene["start"], "utt_id": None, "shot_id": scene["shot_ids"][0] if scene["shot_ids"] else None, "surface": brand}],
+                "sentiment": "neutral", "presence": "shown_only", "visual_check": None,
+                "confidence": scene["visual"].get("confidence", .5),
+            }
+            entities.append(entity)
+            scene["entity_ids"].append(entity["entity_id"])
+    return {"entities": entities, "scenes": scenes, "extractor": "openai_grounded_plus_keywords" if llm.available() else "grounded_keyword_baseline"}
+
+
+class PresenceCheck(BaseModel):
+    visible: bool | None
+    visible_frames: list[str]
+    confidence: float = Field(ge=0, le=1)
+    note: str
 
 
 def s12_vision_targeted(ctx: StageContext) -> dict:
     stage = ctx.stage("s11_entities_dialogue")
+    shots = {shot["shot_id"]: shot for shot in ctx.stage("s03_keyframes")["shots"]}
+    llm = StructuredLLM(ctx.settings, ctx.store, ctx.episode_id)
     entities = []
     for entity in stage["entities"]:
-        entities.append({**entity, "presence": "unverified", "visual_check": {
-            "frames_checked": [], "visible": None, "visible_frames": [], "confidence": 0.0,
-            "note": "Targeted vision provider is not configured; no absence claim was made.",
-        }})
-    return {"entities": entities, "scenes": stage["scenes"], "provider": "conservative_fallback"}
+        if entity["presence"] == "shown_only":
+            entities.append(entity)
+            continue
+        mention_times = [mention["time"] for mention in entity["mentions"] if mention["source"] == "dialogue"]
+        scene = next((scene for scene in stage["scenes"] if any(scene["start"] <= value < scene["end"] for value in mention_times)), None)
+        frame_paths: list[Path] = []
+        if scene:
+            for shot_id in scene["shot_ids"]:
+                shot = shots.get(shot_id)
+                if not shot:
+                    continue
+                relative = shot["keyframe"] or (shots.get(shot["dup_of"] or "") or {}).get("keyframe")
+                if relative and ctx.root / relative not in frame_paths:
+                    frame_paths.append(ctx.root / relative)
+            if len(frame_paths) > 10:
+                step = (len(frame_paths) - 1) / 9
+                frame_paths = [frame_paths[round(index * step)] for index in range(10)]
+        if llm.available() and frame_paths:
+            check = llm.call(
+                model=ctx.settings.llm_model_default,
+                system="Verify only the named entity. Do not infer it from dialogue or context. Visible means clearly present in at least one supplied frame.",
+                user=f"Is {entity['name']} ({entity.get('brand') or 'no brand specified'}) visible? Refer to frames by filename.",
+                schema=PresenceCheck,
+                stage="s12_vision_targeted",
+                images=frame_paths,
+                image_detail="high",
+            )
+            if check.visible is True and check.confidence >= ctx.settings.thresholds.entity_visible_confidence:
+                presence = "mentioned_and_shown"
+            elif check.visible is False and check.confidence >= ctx.settings.thresholds.entity_absent_confidence and len(frame_paths) >= 6:
+                presence = "mentioned_only"
+            else:
+                presence = "unverified"
+            visual_check = {"frames_checked": [str(path.relative_to(ctx.root)) for path in frame_paths], **check.model_dump()}
+        else:
+            presence = "unverified"
+            visual_check = {
+                "frames_checked": [str(path.relative_to(ctx.root)) for path in frame_paths], "visible": None,
+                "visible_frames": [], "confidence": 0.0,
+                "note": "Targeted vision provider is not configured; no absence claim was made.",
+            }
+        entities.append({**entity, "presence": presence, "visual_check": visual_check})
+    return {"entities": entities, "scenes": stage["scenes"], "provider": "openai" if llm.available() else "conservative_fallback"}
 
 
 def _curve_mean(curve: list[list[float]], start: float, end: float) -> float:
@@ -289,8 +448,18 @@ def _curve_mean(curve: list[list[float]], start: float, end: float) -> float:
     return mean(values) if values else 0.0
 
 
+class SemanticDraft(BaseModel):
+    title: str
+    summary: str
+    topics: list[str]
+    mood: str
+    llm_intensity: float = Field(ge=0, le=1)
+    is_cliffhanger: bool
+
+
 def s13_scene_semantics(ctx: StageContext) -> dict:
     scenes, utterances, audio = ctx.stage("s12_vision_targeted")["scenes"], ctx.stage("s07_transcript_clean")["utterances"], ctx.stage("s08_audio_events")
+    llm = StructuredLLM(ctx.settings, ctx.store, ctx.episode_id)
     output = []
     intensity_curve = []
     for index, scene in enumerate(scenes):
@@ -298,21 +467,38 @@ def s13_scene_semantics(ctx: StageContext) -> dict:
         duration = max(.01, scene["end"] - scene["start"])
         dialogue_density = min(1, sum(max(0, item["end"] - item["start"]) for item in scene_utterances) / duration)
         energy = _curve_mean(audio["loudness"], scene["start"], scene["end"])
-        llm_intensity = min(1, .18 + dialogue_density * .62)
+        fallback_intensity = min(1, .18 + dialogue_density * .62)
+        if llm.available():
+            draft = llm.call(
+                model=ctx.settings.llm_model_scenes,
+                system="Describe one drama scene from grounded evidence. Keep the title short, summary under two sentences, and judge narrative intensity rather than simple loudness.",
+                user=(
+                    f"Time: {scene['start']:.1f}-{scene['end']:.1f}\n"
+                    f"Visual: {scene['visual']}\n"
+                    "Dialogue:\n" + "\n".join(f"{item['speaker']}: {item['text']}" for item in scene_utterances)
+                ),
+                schema=SemanticDraft,
+                stage="s13_scene_semantics",
+            )
+        else:
+            draft = SemanticDraft(
+                title=f"Scene {index + 1}", summary=(scene_utterances[0]["text"][:180] if scene_utterances else "No dialogue in this scene."),
+                topics=[], mood="neutral", llm_intensity=fallback_intensity, is_cliffhanger=index == len(scenes) - 1,
+            )
+        llm_intensity = draft.llm_intensity
         intensity = .55 * llm_intensity + .25 * energy + .20 * dialogue_density
-        first_text = scene_utterances[0]["text"] if scene_utterances else "No dialogue in this scene."
         semantic = {
-            "title": f"Scene {index + 1}", "summary": first_text[:180], "topics": [], "mood": "neutral",
+            "title": draft.title, "summary": draft.summary, "topics": draft.topics, "mood": draft.mood,
             "narrative_intensity": round(intensity, 4),
             "intensity_components": {"llm": round(llm_intensity, 4), "audio_energy": round(energy, 4), "dialogue_density": round(dialogue_density, 4)},
-            "is_cliffhanger": index == len(scenes) - 1,
+            "is_cliffhanger": draft.is_cliffhanger,
         }
         output.append({**scene, "semantic": semantic})
         second = math.floor(scene["start"])
         while second <= math.ceil(scene["end"]):
             intensity_curve.append([float(second), round(intensity, 4)])
             second += 1
-    return {"scenes": output, "intensity": intensity_curve, "provider": "fused_deterministic_baseline"}
+    return {"scenes": output, "intensity": intensity_curve, "provider": "openai_fused" if llm.available() else "fused_deterministic_baseline"}
 
 
 def s14_ad_scoring(ctx: StageContext) -> dict:
@@ -433,4 +619,3 @@ def s18_assemble(ctx: StageContext) -> dict:
     ctx.store.write_json(output, timeline)
     ctx.store.write_json(ctx.root / "outputs" / "ad_cuepoints.json", ads["candidates"])
     return {"timeline": "outputs/semantic_timeline.json", "schema_version": "1.0"}
-

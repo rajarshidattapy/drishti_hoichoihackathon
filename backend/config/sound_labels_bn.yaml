@@ -1,0 +1,13 @@
+Knock: {bn: "দরজায় কড়া নাড়ার শব্দ", cc_threshold: 0.35}
+Rain: {bn: "বৃষ্টির শব্দ", cc_threshold: 0.40}
+Thunder: {bn: "বজ্রপাত", cc_threshold: 0.35}
+Telephone bell ringing: {bn: "ফোন বেজে উঠছে", cc_threshold: 0.35}
+Ringtone: {bn: "ফোন বেজে উঠছে", cc_threshold: 0.35}
+Door: {bn: "দরজা খোলার শব্দ", cc_threshold: 0.40}
+Laughter: {bn: "হাসির শব্দ", cc_threshold: 0.45}
+Crying, sobbing: {bn: "কান্নার শব্দ", cc_threshold: 0.40}
+Crowd: {bn: "ভিড়ের কোলাহল", cc_threshold: 0.45}
+Vehicle horn, car horn, honking: {bn: "গাড়ির হর্ন", cc_threshold: 0.40}
+Gunshot, gunfire: {bn: "গুলির শব্দ", cc_threshold: 0.30}
+Footsteps: {bn: "পায়ের শব্দ", cc_threshold: 0.50}
+

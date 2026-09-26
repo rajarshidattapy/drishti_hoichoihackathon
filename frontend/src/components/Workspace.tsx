@@ -27,9 +27,28 @@ export default function Workspace({ episodeId }: { episodeId: string }) {
   const [exportOpen, setExportOpen] = useState(false);
 
   useEffect(() => {
-    Promise.all([api.episode(episodeId), api.timeline(episodeId)])
-      .then(([episodeResult, timelineResult]) => { setEpisode(episodeResult); setData(timelineResult); })
-      .catch((reason: Error) => setError(reason.message));
+    let cancelled = false;
+    let timer: number | undefined;
+    async function load() {
+      try {
+        const episodeResult = await api.episode(episodeId);
+        if (cancelled) return;
+        setEpisode(episodeResult);
+        if (episodeResult.status === "processed") {
+          const timelineResult = await api.timeline(episodeId);
+          if (!cancelled) setData(timelineResult);
+        } else if (episodeResult.status === "failed") {
+          const failed = episodeResult.stages.find((stage) => stage.status === "failed");
+          setError(failed ? `${failed.label}: ${failed.error ?? "Processing failed"}` : "Episode processing failed");
+        } else {
+          timer = window.setTimeout(load, 900);
+        }
+      } catch (reason) {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : "Episode request failed");
+      }
+    }
+    load();
+    return () => { cancelled = true; if (timer) window.clearTimeout(timer); };
   }, [episodeId]);
 
   useEffect(() => {
@@ -50,7 +69,7 @@ export default function Workspace({ episodeId }: { episodeId: string }) {
   }
 
   if (error) return <ErrorState message={error} />;
-  if (!data || !episode || !currentScene) return <LoadingState />;
+  if (!data || !episode || !currentScene) return <LoadingState episode={episode} />;
 
   const q = search.trim().toLocaleLowerCase();
   const searchResults = q ? [
@@ -234,6 +253,5 @@ function JsonTab({ data, episodeId }: { data: Timeline; episodeId: string }) {
 }
 
 function ProcessingBar({ episode }: { episode: Episode }) { return <div className="processing-bar"><span className="signal-dot" /><strong>Processing episode</strong><div><i style={{ width: `${episode.progress}%` }} /></div><span>{episode.progress}%</span><small>{episode.stages.find((stage) => stage.status === "running")?.label ?? "Queued"}</small></div>; }
-function LoadingState() { return <main className="state-screen"><span className="brand-glyph"><i /><i /><i /></span><h1>Building the semantic timeline</h1><p>Loading scenes, entities, captions, and ad candidates…</p></main>; }
+function LoadingState({ episode }: { episode: Episode | null }) { const active = episode?.stages.find((stage) => stage.status === "running"); return <main className="state-screen"><span className="brand-glyph"><i /><i /><i /></span><h1>Building the semantic timeline</h1><p>{active ? `${active.label} is running. ${episode?.progress ?? 0}% complete.` : "Loading scenes, entities, captions, and ad candidates…"}</p>{episode && <div className="loading-progress"><i style={{ width: `${episode.progress}%` }} /></div>}</main>; }
 function ErrorState({ message }: { message: string }) { return <main className="state-screen error"><CircleAlert size={30} /><h1>The episode could not be opened</h1><p>{message}</p><Link href="/" className="primary-button"><ArrowLeft size={16} />Back to library</Link></main>; }
-

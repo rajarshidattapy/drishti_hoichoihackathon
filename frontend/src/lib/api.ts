@@ -1,17 +1,22 @@
+import { mockApi } from "./mock";
 import type { AdCandidate, Episode, Timeline } from "./types";
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+export const USE_MOCK = process.env.NEXT_PUBLIC_USE_MOCK === "true";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, { ...init, cache: "no-store" });
   if (!response.ok) {
     const detail = await response.json().catch(() => ({ detail: "Request failed" }));
-    throw new Error(detail.detail ?? `Request failed (${response.status})`);
+    const message = typeof detail.detail === "string"
+      ? detail.detail
+      : detail.detail?.error ?? detail.detail?.message ?? `Request failed (${response.status})`;
+    throw new Error(message);
   }
   return response.json() as Promise<T>;
 }
 
-export const api = {
+const httpApi = {
   episodes: () => request<Episode[]>("/episodes"),
   episode: (id: string) => request<Episode>(`/episodes/${id}`),
   timeline: (id: string) => request<Timeline>(`/episodes/${id}/timeline`),
@@ -26,3 +31,4 @@ export const api = {
   upload: (form: FormData) => request<Episode>("/episodes", { method: "POST", body: form }),
 };
 
+export const api: typeof httpApi = USE_MOCK ? mockApi : httpApi;

@@ -3,6 +3,9 @@ export type Stage = {
   label: string;
   status: "queued" | "running" | "done" | "failed";
   elapsed?: number;
+  error?: string;
+  started_at?: string;
+  finished_at?: string;
 };
 
 export type Episode = {
@@ -142,4 +145,3 @@ export type Timeline = {
   processing: { total_seconds: number; llm_cost_usd: number; models: string[]; cached_stages: number };
   [key: string]: unknown;
 };
-

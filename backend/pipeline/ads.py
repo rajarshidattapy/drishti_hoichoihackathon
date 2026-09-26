@@ -7,7 +7,7 @@
 5. negative-context filtering  -> brands whose negative_contexts match are excluded (hard)
 6. contextual brand ranking    -> remaining brands ranked from catalogue metadata
 
-Everything is derived from stage data and the catalogue (`docs/brands.json`); there are no
+Everything is derived from stage data and the catalogue (`backend/config/brands.json`); there are no
 hard-coded timestamps, scenes or brand assignments. "No break" is a valid outcome.
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ TOKEN = re.compile(r"[^\s.,;:!?।\"'()\[\]{}/\\\-–—]+")
 
 
 def load_catalogue(path: Path) -> list[dict]:
-    """Advertiser catalogue (docs/brands.json). Adding a brand there needs no code change or reprocessing."""
+    """Advertiser catalogue (backend/config/brands.json). Adding a brand there needs no code change or reprocessing."""
     brands = []
     for brand in json.loads(path.read_text(encoding="utf-8")):
         brands.append({

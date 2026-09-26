@@ -36,35 +36,73 @@ export default function Workspace({ episodeId }: { episodeId: string }) {
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
+    let source: EventSource | undefined;
     let lastProgress = -1;
-    async function load() {
+    // Serialize updates so a slow partial-timeline fetch can't overwrite a newer one.
+    let queue = Promise.resolve(false);
+
+    /** Applies one episode summary; resolves true once processing has finished or failed. */
+    async function apply(episodeResult: Episode): Promise<boolean> {
+      if (cancelled) return true;
+      setEpisode(episodeResult);
+      if (episodeResult.status === "processed") {
+        const timelineResult = await api.timeline(episodeId);
+        if (!cancelled) setData(timelineResult);
+        return true;
+      }
+      if (episodeResult.status === "failed") {
+        const failed = episodeResult.stages.find((stage) => stage.status === "failed");
+        setError(failed ? `${failed.label}: ${failed.error ?? "Processing failed"}` : "Episode processing failed");
+        return true;
+      }
+      // Show whatever has finished so far; the rest fills in as stages complete.
+      if (episodeResult.status !== "downloading" && episodeResult.progress !== lastProgress) {
+        lastProgress = episodeResult.progress;
+        const partial = await api.timeline(episodeId, true).catch(() => null);
+        if (!cancelled && partial) setData(partial);
+      }
+      return false;
+    }
+
+    function enqueue(episodeResult: Episode) {
+      queue = queue.then(() => apply(episodeResult)).catch((reason) => {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : "Episode request failed");
+        return true;
+      });
+      return queue;
+    }
+
+    async function poll() {
       try {
-        const episodeResult = await api.episode(episodeId);
-        if (cancelled) return;
-        setEpisode(episodeResult);
-        if (episodeResult.status === "processed") {
-          const timelineResult = await api.timeline(episodeId);
-          if (!cancelled) setData(timelineResult);
-          return;
-        }
-        if (episodeResult.status === "failed") {
-          const failed = episodeResult.stages.find((stage) => stage.status === "failed");
-          setError(failed ? `${failed.label}: ${failed.error ?? "Processing failed"}` : "Episode processing failed");
-          return;
-        }
-        // Show whatever has finished so far; the rest fills in as stages complete.
-        if (episodeResult.status !== "downloading" && episodeResult.progress !== lastProgress) {
-          lastProgress = episodeResult.progress;
-          const partial = await api.timeline(episodeId, true).catch(() => null);
-          if (!cancelled && partial) setData(partial);
-        }
-        timer = window.setTimeout(load, 1500);
+        const done = await enqueue(await api.episode(episodeId));
+        if (!done && !cancelled) timer = window.setTimeout(poll, 1500);
       } catch (reason) {
         if (!cancelled) setError(reason instanceof Error ? reason.message : "Episode request failed");
       }
     }
-    load();
-    return () => { cancelled = true; if (timer) window.clearTimeout(timer); };
+
+    // Live progress over SSE; the server ends the stream once the episode is processed or failed.
+    function stream() {
+      source = new EventSource(`${API_URL}/episodes/${episodeId}/events`);
+      source.addEventListener("progress", (event) => {
+        enqueue(JSON.parse((event as MessageEvent<string>).data) as Episode).then((done) => { if (done) source?.close(); });
+      });
+      source.onerror = () => {
+        // A transient drop reconnects on its own; a refused stream falls back to polling.
+        if (source?.readyState === EventSource.CLOSED && !cancelled) { source = undefined; poll(); }
+      };
+    }
+
+    (async () => {
+      try {
+        const done = await enqueue(await api.episode(episodeId));
+        if (done || cancelled) return;
+        if (USE_MOCK || typeof EventSource === "undefined") poll(); else stream();
+      } catch (reason) {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : "Episode request failed");
+      }
+    })();
+    return () => { cancelled = true; if (timer) window.clearTimeout(timer); source?.close(); };
   }, [episodeId]);
 
   useEffect(() => {

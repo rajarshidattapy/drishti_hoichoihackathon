@@ -151,9 +151,8 @@ class Settings(BaseSettings):
 
     @property
     def brand_catalogue(self) -> Path:
-        canonical = PROJECT_ROOT / "docs" / "brands.json"
-        # A Vercel project rooted at backend/ cannot access repository-level docs/.
-        return canonical if canonical.is_file() else self.config_dir / "brands.json"
+        # Lives inside backend/ so every deploy (Docker, Vercel) ships the same single copy.
+        return self.config_dir / "brands.json"
 
     @property
     def config_dir(self) -> Path:

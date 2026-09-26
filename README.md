@@ -34,7 +34,7 @@ Open `http://localhost:3000`. FastAPI docs are at `http://localhost:8000/docs`.
 
 - Paste a YouTube or Google Drive link to download and process it through the same pipeline as uploads
 - Episode pages open while processing and fill in as stages finish
-- Ad decisions: hard constraints → safety → pacing → brand safety → brand fit, driven by `docs/brands.json`; "no break" when nothing qualifies
+- Ad decisions: hard constraints → safety → pacing → brand safety → brand fit, driven by `backend/config/brands.json`; "no break" when nothing qualifies
 - VMAP manifest with inline VAST; the player plays the selected ad and resumes the episode; debug JSON under Export
 
 - Episode library with drag-and-drop video upload and processing stages
@@ -61,20 +61,34 @@ The bundled demo is seeded as a separate processed episode. Local models from `d
 
 To run the UI with no backend at all, set `NEXT_PUBLIC_USE_MOCK=true` in `frontend/.env.local`.
 
-## Deploy to Vercel
+## Deploy
 
-Deploy this repository as two Vercel projects. This keeps the Next.js and FastAPI runtimes isolated while they can both use Vercel:
+The frontend runs on Vercel and the backend on Render (Docker), with Neon Postgres as the database. See [`docs/architecture.md`](docs/architecture.md) for how the pieces fit together.
 
-1. Create the web project with **Root Directory** `frontend`. Vercel uses `frontend/vercel.json`, `npm ci`, and `npm run build`.
-2. Create the API project from the same repository with **Root Directory** `backend`. The committed `backend/vercel.json` and `pyproject.toml` expose `app.main:app` as a FastAPI function on Python 3.12.
-3. Set these web-project environment variables for Production, Preview, and Development:
-   - `NEXT_PUBLIC_API_URL`: the public HTTPS origin of the API project, without a trailing slash.
-   - `NEXT_PUBLIC_USE_MOCK=false`
-4. Set `CORS_ORIGINS` on the API project to a comma-separated list containing the web production URL and any preview URL(s) that should access it.
+**Backend (Render).** The repo includes a Render Blueprint, [`render.yaml`](render.yaml), which builds [`backend/Dockerfile`](backend/Dockerfile) (Python 3.11 + ffmpeg) as a single-instance web service with a persistent disk at `/data`.
 
-On Vercel, the API automatically uses `/tmp/drishti` for its writable demo seed. That filesystem and the bundled SQLite database are ephemeral, so the deployed FastAPI function supports the seeded demo and read APIs but is not a durable video-processing service. For real upload/processing, add durable object storage, a managed database, and a queue/worker service with FFmpeg before enabling those routes.
+1. In Render, choose **New → Blueprint** and select this repository.
+2. When prompted, fill in `DATABASE_URL` (Neon; use a separate branch from local dev), `OPENAI_API_KEY`, `SARVAM_API_KEY` and, optionally, `HF_TOKEN`.
+3. `CORS_ORIGINS` is preset to the production frontend URL and `http://localhost:3000`. Edit it in `render.yaml` if the frontend URL changes.
 
-For a frontend-only interactive demo, set `NEXT_PUBLIC_USE_MOCK=true`; no API deployment or `NEXT_PUBLIC_API_URL` value is required. These `NEXT_PUBLIC_*` variables are embedded during the build, so redeploy after changing them.
+Keep the service at one instance: the job queue runs inside the API process and episode files live on its disk.
+
+**Frontend (Vercel).** Create a Vercel project with **Root Directory** `frontend` and set:
+
+- `NEXT_PUBLIC_API_URL`: the Render service URL, without a trailing slash. Point it at Render directly, not at the `/api` rewrite; requests routed through Vercel are capped at 4.5 MB, which rejects video uploads with a 413.
+- `NEXT_PUBLIC_USE_MOCK=false`
+
+`NEXT_PUBLIC_*` variables are embedded at build time, so redeploy after changing them. For a frontend-only demo with no backend, set `NEXT_PUBLIC_USE_MOCK=true`.
+
+**Run the backend image locally:**
+
+```powershell
+cd backend
+docker build -t drishti-api .
+docker run -p 8000:8000 --env-file .env -v drishti-data:/data drishti-api
+```
+
+`backend/vercel.json` is kept for a read-only demo deployment of the API on Vercel. It can't process uploads: Vercel functions cap request bodies at 4.5 MB, their filesystem is temporary, and they stop running after each response.
 
 ## Verify
 

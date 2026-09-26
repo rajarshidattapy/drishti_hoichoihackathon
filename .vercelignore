@@ -1,0 +1,9 @@
+# The frontend Vercel project is deployed from this monorepo root with
+# frontend/ configured as its Root Directory.
+backend/
+data/
+docs/
+examples/
+frontend/.env.local
+frontend/.next/
+frontend/node_modules/

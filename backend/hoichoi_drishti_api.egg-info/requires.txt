@@ -8,9 +8,19 @@ httpx<1,>=0.28
 PyYAML<7,>=6.0
 regex>=2024.11.6
 srt<4,>=3.5
+numpy>=1.26
 
 [dev]
 pytest<9,>=8.3
+
+[gpu]
+scenedetect[opencv]>=0.6.4
+silero-vad>=5.1
+panns-inference>=0.1.1
+torch>=2.2
+transformers>=4.44
+Pillow<13,>=11
+demucs>=4.0
 
 [media]
 Pillow<13,>=11

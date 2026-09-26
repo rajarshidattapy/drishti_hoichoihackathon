@@ -14,12 +14,15 @@ dependencies = [
   "PyYAML>=6.0,<7",
   "regex>=2024.11.6",
   "srt>=3.5,<4",
+  "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3,<9"]
 media = ["Pillow>=11,<13"]
 providers = ["openai>=1.75,<3", "sarvamai>=0.1,<2"]
+# Local models (GPU recommended): shots, VAD, audio events, SigLIP frame embeddings.
+gpu = ["scenedetect[opencv]>=0.6.4", "silero-vad>=5.1", "panns-inference>=0.1.1", "torch>=2.2", "transformers>=4.44", "Pillow>=11,<13", "demucs>=4.0"]
 
 [build-system]
 requires = ["setuptools>=75"]
@@ -29,6 +32,9 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = ["app*", "pipeline*"]
 exclude = ["tests*", "snapshot_failures*"]
+
+[tool.setuptools.package-data]
+pipeline = ["prompts/*.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

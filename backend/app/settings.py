@@ -10,20 +10,74 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Thresholds(BaseModel):
-    shot_scene_threshold: float = Field(0.35, ge=0, le=1)
-    keyframe_dedup_hamming: int = Field(7, ge=0, le=64)
-    min_scene_seconds: float = Field(20.0, gt=0)
-    entity_visible_confidence: float = Field(0.60, ge=0, le=1)
-    entity_absent_confidence: float = Field(0.70, ge=0, le=1)
-    min_ad_pause_seconds: float = Field(1.2, gt=0)
-    ad_blocked_head_seconds: float = Field(120.0, ge=0)
-    ad_blocked_tail_seconds: float = Field(120.0, ge=0)
-    subtitle_max_line_graphemes: int = Field(42, gt=0)
-    subtitle_max_lines: int = Field(2, gt=0)
-    subtitle_max_cps: float = Field(17.0, gt=0)
-    subtitle_min_duration: float = Field(1.0, gt=0)
-    subtitle_max_duration: float = Field(7.0, gt=0)
-    subtitle_min_gap: float = Field(0.08, ge=0)
+    # s02 / s03
+    shot_scene_threshold: float = Field(default=0.35, ge=0, le=1)
+    min_shot_seconds: float = Field(default=0.4, ge=0)
+    keyframe_dedup_hamming: int = Field(default=7, ge=0, le=64)
+    keyframe_dedup_similarity: float = Field(default=0.93, ge=0, le=1)
+    keyframe_dedup_window: int = Field(default=10, gt=0)
+    keyframe_second_frame_after: float = Field(default=8.0, gt=0)
+    # s05
+    vad_min_silence_seconds: float = Field(default=0.3, gt=0)
+    # s07
+    cleanup_batch_size: int = Field(default=40, gt=0)
+    cleanup_context: int = Field(default=5, ge=0)
+    cleanup_max_edit_ratio: float = Field(default=0.25, ge=0, le=1)
+    # s08
+    audio_event_default_threshold: float = Field(default=0.3, ge=0, le=1)
+    audio_event_min_cc_seconds: float = Field(default=0.8, ge=0)
+    audio_event_max_dialogue_overlap: float = Field(default=0.7, ge=0, le=1)
+    # s10
+    scene_weight_visual: float = 0.35
+    scene_weight_location: float = 0.25
+    scene_weight_speakers: float = 0.20
+    scene_weight_silence: float = 0.20
+    scene_boundary_threshold: float = Field(default=0.45, ge=0, le=1)
+    scene_silence_at_cut_seconds: float = Field(default=1.0, ge=0)
+    scene_speaker_window_seconds: float = Field(default=30.0, gt=0)
+    min_scene_seconds: float = Field(default=20.0, gt=0)
+    scene_llm_window: int = Field(default=8, gt=1)
+    # s12
+    entity_visible_confidence: float = Field(default=0.60, ge=0, le=1)
+    entity_absent_confidence: float = Field(default=0.70, ge=0, le=1)
+    entity_absent_min_frames: int = Field(default=6, ge=1)
+    entity_window_long_scene: float = Field(default=180.0, gt=0)
+    entity_window_padding: float = Field(default=45.0, gt=0)
+    entity_max_frames: int = Field(default=10, gt=0)
+    # s13
+    intensity_weight_llm: float = 0.55
+    intensity_weight_audio: float = 0.25
+    intensity_weight_dialogue: float = 0.20
+    intensity_smoothing_seconds: int = Field(default=5, ge=1)
+    # s14
+    min_ad_pause_seconds: float = Field(default=1.2, gt=0)
+    ad_pause_intensity_ceiling: float = Field(default=0.4, ge=0, le=1)
+    ad_snap_to_silence_seconds: float = Field(default=2.0, ge=0)
+    ad_blocked_head_seconds: float = Field(default=120.0, ge=0)
+    ad_blocked_tail_seconds: float = Field(default=120.0, ge=0)
+    ad_default_min_gap: float = Field(default=480.0, ge=0)
+    ad_context_lookback: float = Field(default=60.0, ge=0)
+    ad_speech_guard_seconds: float = Field(default=0.3, ge=0)
+    ad_cliffhanger_guard_seconds: float = Field(default=10.0, ge=0)
+    # s15 / s16
+    subtitle_max_line_graphemes: int = Field(default=42, gt=0)
+    subtitle_max_lines: int = Field(default=2, gt=0)
+    subtitle_max_cps: float = Field(default=17.0, gt=0)
+    subtitle_min_duration: float = Field(default=1.0, gt=0)
+    subtitle_max_duration: float = Field(default=7.0, gt=0)
+    subtitle_min_gap: float = Field(default=0.08, ge=0)
+    subtitle_cps_extension: float = Field(default=0.5, ge=0)
+    cc_sound_shift_seconds: float = Field(default=1.5, ge=0)
+    cc_music_ratio: float = Field(default=0.6, ge=0, le=1)
+    cc_music_min_gap: float = Field(default=3.0, ge=0)
+    # s17
+    qc_error_cps: float = Field(default=21.0, gt=0)
+    qc_low_confidence: float = Field(default=0.6, ge=0, le=1)
+    qc_timing_drift_seconds: float = Field(default=0.5, ge=0)
+    qc_missing_speech_seconds: float = Field(default=2.0, ge=0)
+    qc_speaker_flip_seconds: float = Field(default=1.0, ge=0)
+    qc_max_errors: int = Field(default=0, ge=0)
+    qc_max_warnings: int = Field(default=25, ge=0)
 
 
 class Settings(BaseSettings):
@@ -47,9 +101,14 @@ class Settings(BaseSettings):
     ffprobe_binary: str = "ffprobe"
     max_upload_bytes: int = 8 * 1024 * 1024 * 1024
     worker_concurrency: int = 1
+    stage_parallelism: int = 2
+    # "dhash" (fast, no model download) or "siglip" (google/siglip-base-patch16-224 via transformers).
+    frame_embedder: str = "dhash"
+    llm_vision_concurrency: int = 8
+    llm_text_concurrency: int = 16
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     seed_demo: bool = True
-    thresholds: Thresholds = Thresholds()
+    thresholds: Thresholds = Field(default_factory=Thresholds)
 
     @property
     def episodes_dir(self) -> Path:

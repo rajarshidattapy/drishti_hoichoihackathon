@@ -13,6 +13,7 @@ Requires-Dist: httpx<1,>=0.28
 Requires-Dist: PyYAML<7,>=6.0
 Requires-Dist: regex>=2024.11.6
 Requires-Dist: srt<4,>=3.5
+Requires-Dist: numpy>=1.26
 Provides-Extra: dev
 Requires-Dist: pytest<9,>=8.3; extra == "dev"
 Provides-Extra: media
@@ -20,3 +21,11 @@ Requires-Dist: Pillow<13,>=11; extra == "media"
 Provides-Extra: providers
 Requires-Dist: openai<3,>=1.75; extra == "providers"
 Requires-Dist: sarvamai<2,>=0.1; extra == "providers"
+Provides-Extra: gpu
+Requires-Dist: scenedetect[opencv]>=0.6.4; extra == "gpu"
+Requires-Dist: silero-vad>=5.1; extra == "gpu"
+Requires-Dist: panns-inference>=0.1.1; extra == "gpu"
+Requires-Dist: torch>=2.2; extra == "gpu"
+Requires-Dist: transformers>=4.44; extra == "gpu"
+Requires-Dist: Pillow<13,>=11; extra == "gpu"
+Requires-Dist: demucs>=4.0; extra == "gpu"

@@ -54,6 +54,10 @@ class SarvamClient:
 
     @staticmethod
     def normalize(raw: dict[str, Any]) -> list[dict]:
+        return mark_overlaps(SarvamClient._normalize(raw))
+
+    @staticmethod
+    def _normalize(raw: dict[str, Any]) -> list[dict]:
         diarized = raw.get("diarized_transcript") or {}
         entries = diarized.get("entries") or diarized.get("segments") or diarized.get("utterances") or []
         utterances: list[dict] = []
@@ -71,7 +75,7 @@ class SarvamClient:
                     "speaker_name": None,
                     "text_raw": text.strip(),
                     "text": text.strip(),
-                    "words": None,
+                    "words": _words(entry.get("words")),
                     "confidence": entry.get("confidence"),
                     "overlap": bool(entry.get("overlap", False)),
                 })
@@ -100,4 +104,33 @@ class SarvamClient:
         digits = "".join(character for character in value if character.isdigit())
         index = int(digits or 0)
         return f"SPK_{chr(65 + min(index, 25))}"
+
+
+def _words(value: Any) -> list[dict] | None:
+    if not isinstance(value, list):
+        return None
+    words = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("word") or item.get("text")
+        start = item.get("start_time_seconds", item.get("start"))
+        end = item.get("end_time_seconds", item.get("end"))
+        if text is not None and start is not None and end is not None:
+            words.append({"text": str(text), "start": float(start), "end": float(end)})
+    return words or None
+
+
+def mark_overlaps(utterances: list[dict], min_overlap: float = .3) -> list[dict]:
+    """Flag utterances overlapped by another speaker's turn for more than `min_overlap` seconds."""
+    ordered = sorted(utterances, key=lambda item: item["start"])
+    for index, current in enumerate(ordered):
+        for other in ordered[index + 1:]:
+            if other["start"] >= current["end"]:
+                break
+            if other["speaker"] == current["speaker"]:
+                continue
+            if min(current["end"], other["end"]) - other["start"] > min_overlap:
+                current["overlap"] = other["overlap"] = True
+    return ordered
 

@@ -14,7 +14,8 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFi
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
-from pipeline.runner import PipelineCoordinator, PipelineRunner, STAGES, STAGE_PAIRS
+from pipeline.errors import PipelineError
+from pipeline.runner import PipelineCoordinator, PipelineRunner, STAGES, STAGE_PAIRS, resolve_stage_id
 from pipeline.scoring import select_candidates
 from pipeline.subtitles import write_srt, write_vtt
 
@@ -59,13 +60,11 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        # Resume interrupted or partially processed episodes (e.g. GPU stages synced from another
+        # machine); valid artifacts are detected by the runner's hash sidecars and skipped.
         for record in database.list_episode_records():
-            if record.status in {"queued", "processing"}:
-                stages = database.get_stages(record.id)
-                first = next((stage.stage_id for stage in stages if stage.status != "done"), None)
-                if first:
-                    database.reset_from(record.id, first)
-                    coordinator.enqueue(record.id, from_stage=first)
+            if record.status in {"queued", "processing"} and record.source_path:
+                coordinator.enqueue(record.id)
         yield
         coordinator.shutdown()
         database.close()
@@ -196,10 +195,11 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
         if coordinator.running(episode_id):
             raise HTTPException(409, "This episode is already processing.")
         try:
-            database.reset_from(episode_id, payload.from_stage)
-        except KeyError as exc:
+            stage_id = resolve_stage_id(payload.from_stage)
+            database.reset_from(episode_id, stage_id)
+        except (KeyError, PipelineError) as exc:
             raise HTTPException(422, f"Unknown stage: {payload.from_stage}") from exc
-        coordinator.enqueue(episode_id, from_stage=payload.from_stage, force=payload.force)
+        coordinator.enqueue(episode_id, from_stage=stage_id, force=payload.force)
         return database.summary(episode_or_404(episode_id))
 
     @api.get("/episodes/{episode_id}/timeline", response_model=SemanticTimeline)

@@ -19,3 +19,4 @@ data/episodes/*
 Thumbs.db
 .idea/
 .vscode/
+.env

@@ -52,7 +52,9 @@ Copy-Item .env.example .env
 
 Without `SARVAM_API_KEY`, a real upload stops at `s06_stt` with a retryable stage error; it never receives demo output. Stages before that point—including media probing, proxying, shot detection, keyframes, audio preparation, and VAD—remain cached. Add the key and call `POST /episodes/{id}/rerun` with `{"from_stage":"s06_stt","force":false}`.
 
-The bundled demo is seeded as a separate processed episode. Audio-event classification and optional GPU model upgrades described in `docs/technical.md` remain pluggable; the baseline records their provider status and avoids unsupported claims.
+The bundled demo is seeded as a separate processed episode. Local models from `docs/technical.md` (PySceneDetect, Silero VAD, PANNs audio events, SigLIP, Demucs) are used automatically when the `gpu` extra is installed (`pip install -e ".[gpu]"`); otherwise ffmpeg-based fallbacks run and the timeline records which method produced each artifact. Heavy stages can run on a separate GPU machine with `python -m pipeline.run --episode <id> --stages s02,s03,s04,s08`; see [`backend/README.md`](backend/README.md).
+
+To run the UI with no backend at all, set `NEXT_PUBLIC_USE_MOCK=true` in `frontend/.env.local`.
 
 ## Verify
 
